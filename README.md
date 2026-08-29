@@ -67,7 +67,7 @@ weighted mix. Missing folder sources are dropped at train time, not fatal.
 | **GAS-Station v4 / v3** | fake | 0.11 / 0.10 | weekly open-model dumps after `wire_gasstation.py` |
 | **laion400m-1** | real | 0.10 | `jp1924/Laion400m-1` images in parquet (not a URL scrape) |
 | **Open Images V7** | real | 0.10 | validation + test photographs |
-| **FLUX-Reason-6M** | fake | 0.09 | 5.9M FLUX.1-dev; streamed |
+| **FLUX-Reason-6M** | fake | 0.05 | 5.9M FLUX.1-dev; streamed |
 | **Frontier fakes** | fake | 0.08 | Midjourney / DALL-E / SD / Nano Banana Pro (label inverted) |
 | **SID_Set** | fake | 0.06 | full-synthetic only (drop real + tampered) |
 
@@ -180,10 +180,12 @@ Even the largest supported backbone stays under budget; the default leaves
 ## Training recipe (hero config)
 
 - **Continuation training**: full backbone FT + heads, AdamW, layer-wise LR
-  decay 0.8, cosine schedule, warmup 1k, EMA 0.999, bf16.
-- **Dual-head objective**: image-level BCE + per-patch BCE (weight 0.5).
-- **Composite training** (25% of samples): cropped overlays layered over a
-  base image. Compositing is itself a discontinuity, so *all four*
+  decay 0.8, cosine schedule, warmup 1k, EMA 0.999, bf16. The probe recipe
+  uses Muon on 2D head weights instead (`optimizer: muon`).
+- **Dual-head objective**: image-level BCE + per-patch BCE (weight 1.0).
+- **Composite training** (60% of fake samples; ~25% of the batch is mixed
+  FoR/RoF): cropped overlays layered over a base image. Compositing is
+  itself a discontinuity, so *all four*
   top-on-base pairings are trained — fake-over-real (localized labels),
   real-over-fake (inverted labels), fake-over-fake (label 1 everywhere),
   real-over-real (label stays real) — and patch labels come from each

@@ -19,6 +19,7 @@ batch_size: 64          # no backbone grads -> bigger batches fit
 grad_accum: 1
 max_steps: 20000
 head_lr: 1.0e-3
+optimizer: muon
 weight_decay: 0.05
 warmup_steps: 500
 bf16: true
@@ -52,7 +53,7 @@ data:
       split: train
       local_dirs: [/workspace/data/commfor-small]
       shuffle_buffer: 1024
-      weight: 0.26            # ~18% of fake mass + 0.13 reals (was 0.35)
+      weight: 0.26            # ~19% of fake mass + 0.13 reals (was 0.35)
 
     - name: flux-reason
       type: hf
@@ -61,7 +62,7 @@ data:
       label: 1
       local_dirs: [/workspace/data/flux-reason-6m]
       shuffle_buffer: 512
-      weight: 0.09            # single 2024 family; trimmed for balance
+      weight: 0.05            # single 2024 family; kept below sid-set
 
     - name: frontier-fakes
       type: hf
@@ -125,4 +126,10 @@ augment:
   downscale_prob: 0.30
 
 composite:
-  prob: 0.25            # patch probe trains on composite patch labels (heatmaps)
+  prob: 0.60                 # more fakes become overlays
+  fake_on_real: 0.50
+  real_on_fake: 0.35         # inverted labels — as important as FoR
+  fake_on_fake: 0.15         # keep some seam-negative
+  real_real_fraction: 0.20   # RoR ≈ 12% of reals; do not match `prob`
+  patch_loss_weight: 1.0     # patch probe trains on composite heatmaps
+  mode: mixed

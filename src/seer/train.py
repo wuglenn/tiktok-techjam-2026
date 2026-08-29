@@ -29,6 +29,7 @@ from .data import (
 )
 from .heatmap import save_batch_heatmaps
 from .model import SeerDetector, EMA, build_param_groups, detection_loss, save_checkpoint
+from .optim import build_optimizer, group_param_counts
 
 # Approximate number of rows in streaming datasets (for epochs -> steps).
 KNOWN_SIZES = {
@@ -233,8 +234,12 @@ def run(cfg: TrainConfig):
     # ------------------------------------------------------- optimization
     groups = build_param_groups(model, cfg.lr, cfg.head_lr, cfg.llrd, cfg.weight_decay)
     trainable = [p for g in groups for p in g["params"]]
-    _log(f"[seer] trainable tensors: {len(trainable)}")
-    optimizer = torch.optim.AdamW(groups, lr=cfg.lr, betas=(0.9, 0.999), eps=1e-8)
+    optimizer = build_optimizer(groups, cfg)
+    n_muon, n_adam = group_param_counts(optimizer)
+    _log(
+        f"[seer] optimizer={cfg.optimizer} trainable tensors={len(trainable)} "
+        f"muon_params={n_muon:,} adamw_params={n_adam:,}"
+    )
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
         lambda s: cosine_schedule(s, total_steps, cfg.warmup_steps, cfg.min_lr_ratio),

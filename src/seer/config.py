@@ -228,6 +228,10 @@ class TrainConfig:
     lr: float = 1.0e-5  # backbone base LR (LLRD scales down from here)
     head_lr: float = 1.0e-4
     llrd: float = 0.8  # layer-wise LR decay for the backbone
+    optimizer: str = "muon"  # muon (2D hidden) + AdamW (rest); or "adamw"
+    muon_momentum: float = 0.95
+    muon_ns_steps: int = 5
+    muon_adjust_lr: str = "match_rms_adamw"  # or "original" (Keller spectral)
     weight_decay: float = 0.05
     warmup_steps: int = 500
     min_lr_ratio: float = 0.05

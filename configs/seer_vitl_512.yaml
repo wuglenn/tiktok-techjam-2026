@@ -17,16 +17,17 @@
 #
 # Weights are relative sampling probabilities, tuned for two goals:
 #   1. recency - the most recent fake sources carry the most fake mass:
-#      ntire (42 gens 2022-2026, ~21% of fake draws), the GAS-Station
-#      weekly dumps (v3 ~14% / v4 ~15%) and frontier-fakes incl. Nano
-#      Banana Pro (~11%, capped by its tiny ~5k-image train split).
-#   2. balance - no fake source above ~21% of the fake class. comfor
-#      fakes (SD-derivative heavy, older skew) drop to ~18% but keep
+#      ntire (42 gens 2022-2026, ~22% of fake draws), the GAS-Station
+#      weekly dumps (v3 ~15% / v4 ~16%) and frontier-fakes incl. Nano
+#      Banana Pro (~12%, capped by its tiny ~5k-image train split).
+#   2. balance - no fake source above ~22% of the fake class. comfor
+#      fakes (SD-derivative heavy, older skew) stay ~19% but keep
 #      enough weight to preserve the 4,803-generator diversity that
 #      drives unseen-generator generalization, plus its 278k paired
-#      reals; sid-set (~8%) has untagged, mostly older generators;
-#      flux-reason (~12%) is a single FLUX.1-dev family.
+#      reals; sid-set (~9%) has untagged, mostly older generators;
+#      flux-reason (~7%) is a single FLUX.1-dev family.
 # Real mass comes from comfor, ntire, laion400m-1, and open-images-v7.
+# `balance_labels` then draws real/fake 50/50; weights apply within class.
 
 backbone: facebook/dinov3-vitl16-pretrain-lvd1689m  # gated: accept license + hf auth login
 pretrained: true
@@ -37,6 +38,7 @@ max_steps: 60000
 lr: 1.0e-5
 head_lr: 1.0e-4
 llrd: 0.8
+optimizer: adamw
 weight_decay: 0.05
 warmup_steps: 1000
 bf16: true
@@ -49,13 +51,15 @@ out_dir: runs/seer_vitl
 data:
   source: mixture
   val_max_samples: 4096
+  balance_labels: true  # 50/50 real/fake, then weights within each class
   sources:
     - name: comfor
       type: comfor
       dataset: OwensLab/CommunityForensics-Small   # train only; Eval is held out
+      split: train
       local_dirs: [/workspace/data/commfor-small]
       shuffle_buffer: 8192
-      weight: 0.26            # ~18% of fake mass + 0.13 reals (was 0.35)
+      weight: 0.26            # ~19% of fake mass + 0.13 reals (was 0.35)
 
     - name: flux-reason
       type: hf
@@ -64,7 +68,7 @@ data:
       label: 1                 # every row is FLUX.1-dev
       local_dirs: [/workspace/data/flux-reason-6m]
       shuffle_buffer: 2048
-      weight: 0.09            # single 2024 family; trimmed for balance
+      weight: 0.05            # single 2024 family; kept below sid-set
 
     - name: frontier-fakes
       type: hf
@@ -130,6 +134,10 @@ augment:
   downscale_prob: 0.30
 
 composite:
-  prob: 0.25
-  patch_loss_weight: 0.5
-  mode: mixed                   # blend (seamless) + paste (hard overlay)
+  prob: 0.60                 # more fakes become overlays
+  fake_on_real: 0.50
+  real_on_fake: 0.35         # inverted labels — as important as FoR
+  fake_on_fake: 0.15         # keep some seam-negative
+  real_real_fraction: 0.20   # RoR ≈ 12% of reals; do not match `prob`
+  patch_loss_weight: 1.0
+  mode: mixed                # blend (seamless) + paste (hard overlay)

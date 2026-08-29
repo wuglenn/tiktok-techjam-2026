@@ -13,37 +13,41 @@ otherwise `F:/techjam`). Paths below are written as `$SEER_DATA_ROOT/<name>`.
 
 ## How sampling works
 
-`MixtureDataset` draws each training example from source *i* with probability
-`weight_i / sum(weights)`. Weights are relative, not required to sum to 1.
+`MixtureDataset` first draws a class (real vs fake) with equal probability
+when `balance_labels` is on, then picks source *i* among sources that can
+produce that class with probability `weight_i / sum(weights in class)`.
+Weights are relative, not required to sum to 1.
 
 A source that raises `FileNotFoundError` or is empty is dropped for the rest
 of the run (logged as `[data] dropping <name>`). That is how unwired
 GAS-Station listings and still-empty real folders fail open.
 
-Labels after mapping: **0 = real**, **1 = fake**. Composite overlays (25% of
-steps) can change the page/patch labels on top of this mix; they are not a
-separate source.
+Labels after mapping: **0 = real**, **1 = fake**. Composite overlays (60% of
+fake samples, tilted toward fake-on-real / real-on-fake) can change the
+page/patch labels on top of this mix; they are not a separate source.
 
 ## Train sources
 
-Current yaml weights sum to **1.20**. The share column is `weight / 1.20`.
+Current yaml weights sum to **1.16**. The share column is `weight / 1.16`
+(source-draw share before `balance_labels`).
 
 | Source | Class | Weight | Share | On-disk / stream | How to materialize |
 |---|---|---|---|---|---|
-| `comfor` | mixed (paired real + fake) | 0.26 | 21.7% | `$SEER_DATA_ROOT/commfor-small` | `scripts/fetch_data.py comfor-small` |
-| `ntire` | mixed (matched real + fake) | 0.30 | 25.0% | `$SEER_DATA_ROOT/ntire` | `python get_datasets.py --only ntire-train` |
-| `flux-reason` | fake | 0.09 | 7.5% | stream `LucasFang/FLUX-Reason-6M` | optional slice: `scripts/fetch_data.py flux-reason-6m --max-shards 8` |
-| `frontier-fakes` | fake only | 0.08 | 6.7% | `$SEER_DATA_ROOT/frontier-fakes` | `scripts/fetch_data.py frontier-fakes` |
-| `sid-set` | fake only (full synthetic) | 0.06 | 5.0% | stream `saberzl/SID_Set` | optional slice: `scripts/fetch_data.py sid-set --max-shards 16` |
-| `gs-images-v3` | fake | 0.10 | 8.3% | `$SEER_DATA_ROOT/gs-images-v3/wired/images.txt` | `scripts/wire_gasstation.py --versions v3` |
-| `gs-images-v4` | fake | 0.11 | 9.2% | `$SEER_DATA_ROOT/gs-images-v4/wired/images.txt` | `scripts/wire_gasstation.py --versions v4` |
-| `laion400m-1` | real | 0.10 | 8.3% | `$SEER_DATA_ROOT/laion400m-1/real` | `scripts/download_laion400m.py` |
-| `open-images-v7` | real | 0.10 | 8.3% | `$SEER_DATA_ROOT/open-images-v7` | `scripts/download_open_images.py` |
+| `comfor` | mixed (paired real + fake) | 0.26 | 22.4% | `$SEER_DATA_ROOT/commfor-small` | `scripts/fetch_data.py comfor-small` |
+| `ntire` | mixed (matched real + fake) | 0.30 | 25.9% | `$SEER_DATA_ROOT/ntire` | `python get_datasets.py --only ntire-train` |
+| `flux-reason` | fake | 0.05 | 4.3% | stream `LucasFang/FLUX-Reason-6M` | optional slice: `scripts/fetch_data.py flux-reason-6m --max-shards 8` |
+| `frontier-fakes` | fake only | 0.08 | 6.9% | `$SEER_DATA_ROOT/frontier-fakes` | `scripts/fetch_data.py frontier-fakes` |
+| `sid-set` | fake only (full synthetic) | 0.06 | 5.2% | stream `saberzl/SID_Set` | optional slice: `scripts/fetch_data.py sid-set --max-shards 16` |
+| `gs-images-v3` | fake | 0.10 | 8.6% | `$SEER_DATA_ROOT/gs-images-v3/wired/images.txt` | `scripts/wire_gasstation.py --versions v3` |
+| `gs-images-v4` | fake | 0.11 | 9.5% | `$SEER_DATA_ROOT/gs-images-v4/wired/images.txt` | `scripts/wire_gasstation.py --versions v4` |
+| `laion400m-1` | real | 0.10 | 8.6% | `$SEER_DATA_ROOT/laion400m-1/real` | `scripts/download_laion400m.py` |
+| `open-images-v7` | real | 0.10 | 8.6% | `$SEER_DATA_ROOT/open-images-v7` | `scripts/download_open_images.py` |
 
-Pure-fake sources are **36.7%** of draws, pure-real **16.7%**, mixed **46.7%**.
-Community Forensics is roughly balanced; NTIRE train is real/fake matched per
-shard but not exactly 50/50 overall. After that, expected class mass is
-roughly **~40% real / ~60% fake** before composites.
+Pure-fake sources are **34.5%** of source draws, pure-real **17.2%**, mixed
+**48.3%**. Community Forensics is roughly balanced; NTIRE train is real/fake
+matched per shard but not exactly 50/50 overall. `balance_labels` then forces
+**50/50 real/fake** batches; the weights above only decide which source is
+used once the class is chosen.
 
 Do not add a source above ~25% share without revisiting the others. Recency
 is tilted toward NTIRE (42 generators, 2022–2026) and GAS-Station v4.
@@ -74,7 +78,8 @@ is tilted toward NTIRE (42 generators, 2022–2026) and GAS-Station v4.
 ### `flux-reason` — FLUX.1-dev
 
 - Every row is fake (`label: 1`). Full dump is ~5.9M images / ~882 GB;
-  default training streams it. Do not snapshot the repo.
+  default training streams it. Do not snapshot the repo. Weight is kept
+  below `sid-set` so one 2024 family does not dominate fake draws.
 
 ### `frontier-fakes` — Midjourney / DALL-E / SD / Nano Banana Pro
 
