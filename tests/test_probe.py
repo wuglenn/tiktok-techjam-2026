@@ -1,10 +1,10 @@
-"""Multi-layer page-level linear probe tests (offline, tiny backbone).
+"""Multi-layer linear probe tests (offline, tiny backbone).
 
 Verifies, without network access:
-  * probe mode builds a single linear head over concatenated multi-block
-    features and returns page-level logits only
+  * probe mode builds independent page and patch heads over concatenated
+    multi-block features
   * layer specs resolve (auto spacing, negatives, dedup) and validate
-  * training updates the head but never the (frozen) backbone
+  * training updates both heads but never the (frozen) backbone
   * checkpoints round-trip through load_checkpoint as probe models
   * the full training loop runs end to end in probe mode
 """
@@ -41,16 +41,22 @@ def test_probe_build_and_forward():
     assert not hasattr(m, "global_head") and not hasattr(m, "local_head")
     # 3 taps * ([CLS ; mean-patch] = 2*hidden) input dim
     assert m.probe_head[-1].in_features == 3 * 2 * m.hidden_size
+    assert m.probe_patch_head[-1].in_features == 3 * m.hidden_size
     x = torch.randn(2, 3, 224, 224)
     out = m(x)
     assert out["logits"].shape == (2,)
-    assert out["patch_logits"] is None
+    G = 224 // m.patch_size
+    assert out["patch_logits"].shape == (2, G * G)
     assert torch.isfinite(out["logits"]).all()
+    assert torch.isfinite(out["patch_logits"]).all()
     # features must differ between taps (early vs late blocks)
     f = m.layer_features(x)
     assert f.shape == (2, 3 * 2 * m.hidden_size)
     per_tap = f.split(2 * m.hidden_size, dim=-1)
     assert not torch.allclose(per_tap[0], per_tap[2])
+    page, patches = m.probe_features(x)
+    assert page.shape == f.shape
+    assert patches.shape == (2, G * G, 3 * m.hidden_size)
     print("probe model build + forward OK")
 
 
@@ -75,7 +81,9 @@ def test_probe_train_step():
 
     groups = build_param_groups(model, 1e-5, 1e-3, 0.8, 0.05)
     trainable = [p for g in groups for p in g["params"]]
-    head_params = list(model.probe_head.parameters())
+    head_params = list(model.probe_head.parameters()) + list(
+        model.probe_patch_head.parameters()
+    )
     assert {id(p) for p in trainable} == {id(p) for p in head_params}
 
     opt = torch.optim.AdamW(groups)
@@ -86,13 +94,14 @@ def test_probe_train_step():
     for _ in range(2):
         out = model(x)
         assert out["logits"].requires_grad  # head runs outside the no_grad block
+        assert out["patch_logits"].requires_grad
         loss, stats = detection_loss(out["logits"], out["patch_logits"], y, pl)
         opt.zero_grad()
         loss.backward()
         assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in head_params)
         opt.step()
         assert torch.isfinite(loss), loss
-        assert stats["loss_patch"] == 0.0
+        assert stats["loss_patch"] > 0.0
 
     for k, v in model.backbone.state_dict().items():
         assert torch.equal(v, backbone_before[k]), k
@@ -113,7 +122,9 @@ def test_probe_checkpoint_roundtrip():
         assert getattr(m2, "probe", False)
         assert m2.probe_layers == [0, 2]
         x = torch.randn(1, 3, 224, 224)
-        assert torch.allclose(model(x)["logits"], m2(x)["logits"], atol=1e-6)
+        o1, o2 = model(x), m2(x)
+        assert torch.allclose(o1["logits"], o2["logits"], atol=1e-6)
+        assert torch.allclose(o1["patch_logits"], o2["patch_logits"], atol=1e-6)
     print("probe checkpoint round-trip OK")
 
 
@@ -144,7 +155,11 @@ def test_probe_end_to_end():
         assert os.path.exists(last)
         m, cfg_dict, _ = load_checkpoint(last)
         assert getattr(m, "probe", False) and m.probe_layers == [0, 2]
+        assert hasattr(m, "probe_patch_head")
         assert cfg_dict["probe"]["enabled"]
+        x = torch.randn(1, 3, 224, 224)
+        out = m(x)
+        assert out["patch_logits"].shape[-1] == (224 // m.patch_size) ** 2
     print("probe end-to-end training OK")
 
 

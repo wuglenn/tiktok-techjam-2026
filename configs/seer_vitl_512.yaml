@@ -2,6 +2,7 @@
 # public data mixture. ~302M parameters (15% of the 2B budget).
 # Best run on an A100/H100 class GPU; see seer_vitl_local.yaml for 12GB.
 #
+# Full mix + fetch commands: docs/DATA_MIXTURE.md
 # The mixture mirrors Pangram Image's data strategy:
 #   * comfor        - 4,803 open generators (diversity drives generalization,
 #                     CVPR 2025) + paired real images
@@ -11,6 +12,8 @@
 #   * sid-set       - SID_Set full-synthetic only (drop reals and tampered)
 #   * ntire         - NTIRE 2026 train, all 6 shards (42 gens, matched reals)
 #   * gs-images-v3/v4 - GAS-Station dumps after scripts/wire_gasstation.py
+#   * laion400m-1   - jp1924/Laion400m-1 hosted images (min side >512)
+#   * open-images-v7 - Open Images V7 validation+test reals
 #
 # Weights are relative sampling probabilities, tuned for two goals:
 #   1. recency - the most recent fake sources carry the most fake mass:
@@ -23,8 +26,7 @@
 #      drives unseen-generator generalization, plus its 278k paired
 #      reals; sid-set (~8%) has untagged, mostly older generators;
 #      flux-reason (~12%) is a single FLUX.1-dev family.
-# comfor + ntire are the only real-image suppliers, so the overall
-# real/fake ratio stays ~28/72.
+# Real mass comes from comfor, ntire, laion400m-1, and open-images-v7.
 
 backbone: facebook/dinov3-vitl16-pretrain-lvd1689m  # gated: accept license + hf auth login
 pretrained: true
@@ -105,6 +107,16 @@ data:
       type: folders
       fake_dirs: [/workspace/data/gs-images-v4/wired/images.txt]
       weight: 0.11              # latest weekly dumps - highest recency
+
+    - name: laion400m-1
+      type: folders             # jp1924/Laion400m-1; scripts/download_laion400m.py
+      real_dirs: [/workspace/data/laion400m-1/real]
+      weight: 0.10
+
+    - name: open-images-v7
+      type: folders             # scripts/download_open_images.py (val + test)
+      real_dirs: [/workspace/data/open-images-v7]
+      weight: 0.10
 
 augment:
   # benchmark robustness levels (GenImage / OmniAID / Pangram protocols)

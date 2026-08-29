@@ -168,18 +168,26 @@ class ComforStream(torch.utils.data.IterableDataset):
 
     def _iter_rows(self):
         if self._local_files:
+            print(
+                f"[data] comfor: {len(self._local_files)} local parquet, "
+                f"shuffle={self._shuffle_buffer}",
+                flush=True,
+            )
             ds = hfds.load_dataset("parquet", data_files=self._local_files, split="train", streaming=True)
         else:
+            print(f"[data] comfor: streaming {self._dataset}/{self._split}", flush=True)
             ds = hfds.load_dataset(self._dataset, split=self._split, streaming=True)
         if self._shuffle_buffer > 0:
+            print(f"[data] comfor: filling shuffle buffer ({self._shuffle_buffer})", flush=True)
             ds = ds.shuffle(seed=self._seed, buffer_size=self._shuffle_buffer)
         if self._max_samples:
             ds = ds.take(self._max_samples)
         n = 0
+        first = True
         for row in ds:
             try:
                 if self._lazy_decode:
-                    yield {
+                    sample = {
                         "image": None,
                         "image_bytes": bytes(row["image_data"]),
                         "label": int(row.get("label", 0)),
@@ -190,9 +198,13 @@ class ComforStream(torch.utils.data.IterableDataset):
                         "nsfw_flag": _to_bool(row.get("nsfw_flag", False)),
                     }
                 else:
-                    yield decode_row(row)
+                    sample = decode_row(row)
             except Exception:
                 continue  # skip corrupt rows
+            if first:
+                print(f"[data] comfor: first row label={sample['label']}", flush=True)
+                first = False
+            yield sample
             n += 1
             if self._max_samples and n >= self._max_samples:
                 break
@@ -253,13 +265,22 @@ class HFGenericStream(torch.utils.data.IterableDataset):
         return int(self._label if self._label is not None else 0)
 
     def _iter_rows(self):
+        name = self._name or self._dataset
         if self._local_files:
+            print(
+                f"[data] {name}: {len(self._local_files)} local parquet, "
+                f"shuffle={self._shuffle_buffer}",
+                flush=True,
+            )
             ds = hfds.load_dataset("parquet", data_files=self._local_files, split="train", streaming=True)
         else:
+            print(f"[data] {name}: streaming {self._dataset}/{self._split}", flush=True)
             ds = hfds.load_dataset(self._dataset, split=self._split, streaming=True)
         if self._shuffle_buffer > 0:
+            print(f"[data] {name}: filling shuffle buffer ({self._shuffle_buffer})", flush=True)
             ds = ds.shuffle(seed=self._seed, buffer_size=self._shuffle_buffer)
         n = 0
+        first = True
         for row in ds:
             try:
                 lab = self._label_of(row)
@@ -269,10 +290,14 @@ class HFGenericStream(torch.utils.data.IterableDataset):
                     continue
                 img = _as_pil(row.get(self._image_col))
                 gen = str(row.get(self._generator_col)) if self._generator_col else self._name
-                yield {"image": img, "label": int(lab), "generator": gen or self._name,
-                       "architecture": "", "image_name": ""}
+                sample = {"image": img, "label": int(lab), "generator": gen or self._name,
+                          "architecture": "", "image_name": ""}
             except Exception:
                 continue
+            if first:
+                print(f"[data] {name}: first row label={sample['label']}", flush=True)
+                first = False
+            yield sample
             n += 1
             if self._max_samples and n >= self._max_samples:
                 break
@@ -407,12 +432,17 @@ class NtireStream:
     ):
         from .ntire import load_split
 
+        print(f"[data] ntire loading {split} shard={shard}...", flush=True)
         samples = load_split(split, shard=shard, hard=hard)
         if clean_only:
             samples = [s for s in samples if not s.is_distorted]
         self.samples = samples
         self.max_samples = max_samples
         self.seed = seed
+        print(
+            f"[data] ntire {split} shard={shard}: {len(samples)} labelled images",
+            flush=True,
+        )
 
     def __iter__(self):
         items = list(self.samples)
@@ -485,6 +515,22 @@ def _source_iterator(spec, seed: int) -> Iterator[dict]:
     raise ValueError(f"Unknown source type '{spec.type}'")
 
 
+def source_classes(spec) -> List[int]:
+    """Which labels a source can emit (0=real, 1=fake)."""
+    if spec.type == "folders":
+        out: List[int] = []
+        if spec.real_dirs:
+            out.append(0)
+        if spec.fake_dirs:
+            out.append(1)
+        return out or [0, 1]
+    if spec.keep_label is not None:
+        return [int(spec.keep_label)]
+    if spec.label is not None and spec.label_col is None:
+        return [int(spec.label)]
+    return [0, 1]
+
+
 class MixtureDataset(torch.utils.data.IterableDataset):
     """Weighted mixture over sources, cycled indefinitely.
 
@@ -494,7 +540,7 @@ class MixtureDataset(torch.utils.data.IterableDataset):
     repeated passes, materialize them to folders with scripts/download_data.py.
     """
 
-    def __init__(self, sources, seed: int = 0):
+    def __init__(self, sources, seed: int = 0, balance_labels: bool = False):
         super().__init__()
         if not sources:
             raise ValueError("MixtureDataset needs at least one source")
@@ -505,14 +551,20 @@ class MixtureDataset(torch.utils.data.IterableDataset):
         if sum(self.weights) <= 0:
             raise ValueError("All mixture weights are zero")
         self.seed = seed
+        self.balance_labels = bool(balance_labels)
+        self._classes = [source_classes(s) for s in self.sources]
 
     def __iter__(self):
-        rng = random.Random(self.seed)
+        info = torch.utils.data.get_worker_info()
+        seed = self.seed if info is None else self.seed + info.id * 1009
+        rng = random.Random(seed)
         iters = [None] * len(self.sources)
         dead = [False] * len(self.sources)
+        seen = [False] * len(self.sources)
 
         def next_from(i):
             if iters[i] is None:
+                print(f"[data] opening source {self.sources[i].name}", flush=True)
                 iters[i] = _source_iterator(self.sources[i], seed=rng.randrange(1 << 30))
             try:
                 return next(iters[i])
@@ -520,19 +572,44 @@ class MixtureDataset(torch.utils.data.IterableDataset):
                 iters[i] = _source_iterator(self.sources[i], seed=rng.randrange(1 << 30))
                 return next(iters[i])
 
+        def pick(live, want=None):
+            if want is None:
+                cands = live
+            else:
+                cands = [i for i in live if want in self._classes[i]]
+                if not cands:
+                    cands = live
+            w = [self.weights[j] for j in cands]
+            return cands[rng.choices(range(len(cands)), weights=w, k=1)[0]]
+
         while True:
             live = [i for i, is_dead in enumerate(dead) if not is_dead]
             if not live:
                 return
-            i = live[rng.choices(range(len(live)), weights=[self.weights[j] for j in live], k=1)[0]]
+            want = rng.choice([0, 1]) if self.balance_labels else None
+            i = pick(live, want)
             try:
-                yield next_from(i)
+                sample = next_from(i)
+                if want is not None and int(sample.get("label", -1)) != want:
+                    for _try in range(16):
+                        i = pick(live, want)
+                        sample = next_from(i)
+                        if int(sample.get("label", -1)) == want:
+                            break
+                if not seen[i]:
+                    seen[i] = True
+                    print(
+                        f"[data] first sample from {self.sources[i].name} "
+                        f"label={sample.get('label')}",
+                        flush=True,
+                    )
+                yield sample
             except FileNotFoundError:
-                # folder listing not wired yet (e.g. GAS-Station before
-                # scripts/wire_gasstation.py) — drop that source, keep going
                 dead[i] = True
-            except StopIteration:  # empty source, permanently
+                print(f"[data] dropping {self.sources[i].name}: not found", flush=True)
+            except StopIteration:
                 dead[i] = True
+                print(f"[data] dropping {self.sources[i].name}: empty", flush=True)
 
 
 class ConcatDataset(torch.utils.data.Dataset):
@@ -557,7 +634,9 @@ class ConcatDataset(torch.utils.data.Dataset):
 def build_train_dataset(cfg) -> torch.utils.data.Dataset:
     d = cfg.data
     if d.source == "mixture" and d.sources:
-        return MixtureDataset(d.sources, seed=cfg.seed)
+        return MixtureDataset(
+            d.sources, seed=cfg.seed, balance_labels=d.balance_labels
+        )
     if d.source in ("mixture", "comfor"):
         assert_not_comfor_eval_train(d.dataset, d.local_dirs)
         # explicit comfor, or a mixture with no sources: Community Forensics
@@ -599,7 +678,9 @@ def build_val_dataset(cfg) -> torch.utils.data.Dataset:
             dataclasses.replace(s, max_samples=max(1, d.val_max_samples // len(specs)))
             for s in specs
         ]
-        return MixtureDataset(capped, seed=d.val_seed)
+        return MixtureDataset(
+            capped, seed=d.val_seed, balance_labels=d.balance_labels
+        )
     if d.source == "comfor":
         return ComforStream(
             dataset=d.dataset,
@@ -631,11 +712,20 @@ class BatchBuilder:
         self.rng = random.Random(seed)
         if decode_workers is None:
             decode_workers = getattr(cfg, "decode_workers", 0)
+        self._decode_workers = int(decode_workers or 0)
         self._pool = None
-        if decode_workers and decode_workers > 1:
+
+    def _ensure_pool(self):
+        if self._pool is None and self._decode_workers > 1:
             from concurrent.futures import ThreadPoolExecutor
 
-            self._pool = ThreadPoolExecutor(max_workers=int(decode_workers))
+            self._pool = ThreadPoolExecutor(max_workers=self._decode_workers)
+        return self._pool
+
+    def __getstate__(self):
+        state = dict(self.__dict__)
+        state["_pool"] = None
+        return state
 
     def _process_one(self, s: dict, seed: int) -> torch.Tensor:
         from .augment import eval_transform, train_transform
@@ -802,8 +892,9 @@ class BatchBuilder:
     def __call__(self, samples: List[dict]) -> dict:
         # seeds are drawn on the caller thread (rng safety under the pool)
         seeds = [self.rng.randrange(1 << 30) for _ in samples]
-        if self._pool is not None and len(samples) > 1:
-            imgs = list(self._pool.map(lambda p: self._process_one(*p), zip(samples, seeds)))
+        pool = self._ensure_pool()
+        if pool is not None and len(samples) > 1:
+            imgs = list(pool.map(lambda p: self._process_one(*p), zip(samples, seeds)))
         else:
             imgs = [self._process_one(s, seed) for s, seed in zip(samples, seeds)]
 
@@ -818,21 +909,73 @@ class BatchBuilder:
         return {"images": images, "labels": labels, "patch_labels": patch_labels}
 
 
-class Prefetcher:
-    """Moves batches to the device on a background thread so JPEG decode and
-    H2D copy overlap with GPU compute. Accepts any iterable of batches
-    (including an infinite batch generator - never terminates)."""
+class ThreadedSampleQueue(torch.utils.data.IterableDataset):
+    """Several independent mixture iterators feeding one queue.
 
-    def __init__(self, batch_iterable, device, depth: int = 2):
+    Parquet and folder I/O release the GIL, so extra reader threads raise
+    sample yield rate and keep the decode pool from starving.
+    """
+
+    def __init__(self, make_iter, n_readers: int = 4, queue_size: int = 512):
+        super().__init__()
+        self._make_iter = make_iter
+        self._n = max(1, int(n_readers))
+        self._queue_size = int(queue_size)
+
+    def __iter__(self):
+        if self._n == 1:
+            yield from self._make_iter(0)
+            return
         import queue
         import threading
 
-        self.q: "queue.Queue" = queue.Queue(maxsize=depth)
+        q: "queue.Queue" = queue.Queue(maxsize=self._queue_size)
+        sentinel = object()
+
+        def run(idx):
+            try:
+                for sample in self._make_iter(idx):
+                    q.put(sample)
+            finally:
+                q.put(sentinel)
+
+        for i in range(self._n):
+            threading.Thread(target=run, args=(i,), daemon=True).start()
+        live = self._n
+        while live:
+            item = q.get()
+            if item is sentinel:
+                live -= 1
+                continue
+            yield item
+
+
+class Prefetcher:
+    """Decode/collate on a background thread, pin + H2D there too, so the
+    training loop only waits if the CPU pipeline is behind."""
+
+    def __init__(self, batch_iterable, device, depth: int = 4):
+        import queue
+        import threading
+
+        self.q: "queue.Queue" = queue.Queue(maxsize=max(2, int(depth)))
         self.device = device
 
         def worker():
+            stream = torch.cuda.Stream(device=device) if device.type == "cuda" else None
             try:
                 for batch in batch_iterable:
+                    if stream is not None:
+                        pinned = {
+                            k: v.pin_memory() if torch.is_tensor(v) else v
+                            for k, v in batch.items()
+                        }
+                        with torch.cuda.stream(stream):
+                            batch = {
+                                k: v.to(device, non_blocking=True) if torch.is_tensor(v) else v
+                                for k, v in pinned.items()
+                            }
+                        stream.synchronize()
                     self.q.put(batch)
             finally:
                 self.q.put(None)
@@ -847,4 +990,4 @@ class Prefetcher:
         batch = self.q.get()
         if batch is None:
             raise StopIteration
-        return {k: v.to(self.device, non_blocking=False) for k, v in batch.items()}
+        return batch

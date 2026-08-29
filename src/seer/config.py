@@ -88,6 +88,10 @@ class DataConfig:
     max_samples: Optional[int] = None  # cap streamed samples (None = all)
     val_max_samples: int = 2048
     val_seed: int = 1
+    # Draw real/fake with equal probability, then pick a source that can
+    # produce that class (weights still apply within a class). Stops fake-only
+    # families from dominating the batch.
+    balance_labels: bool = False
 
 
 @dataclass
@@ -193,10 +197,10 @@ class ProbeConfig:
     statistics - where generator fingerprints live - while mid and late
     blocks carry increasingly semantic features, so the probe sees both.
 
-    Each tap contributes [CLS ; mean(patch tokens)] for its block; all taps
-    are concatenated and standardized (LayerNorm) before the linear map.
-    The probe is page-level only: one logit per image, no patch head, so
-    heatmaps are unavailable for probe checkpoints.
+    Each tap contributes [CLS ; mean(patch tokens)] for the page head and
+    the raw patch tokens for a separate heatmap head; taps are concatenated
+    and standardized (LayerNorm) before each linear map. The two heads do
+    not share weights.
 
     layers - 0-based encoder block indices to tap; negative counts from
               the end (-1 = final block). Empty = auto: four evenly spaced
@@ -239,6 +243,9 @@ class TrainConfig:
     out_dir: str = "runs/seer"
     resume: Optional[str] = None
     decode_workers: int = 8  # threads for image decode+augment in the collate
+    num_workers: int = 0  # DataLoader processes; 0 = in-process (safer after CUDA)
+    loader_readers: int = 1  # threads independently iterating the mixture
+    prefetch_depth: int = 2  # collated batches queued ahead of the GPU
 
     data: DataConfig = field(default_factory=DataConfig)
     augment: AugmentConfig = field(default_factory=AugmentConfig)

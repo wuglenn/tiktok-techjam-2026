@@ -10,10 +10,10 @@ Dual heads:
   * global head: [CLS ; mean(patch tokens)] -> MLP -> single real/AI logit
   * local head : per-patch linear -> patch logits (heatmaps / composites)
 
-Alternatively (probe mode), the backbone stays frozen and a single linear
-head is trained on features tapped from several blocks of the backbone -
-early blocks for high-frequency fingerprints, mid/late blocks for
-semantics - one real/AI logit per page (image). See ProbeConfig.
+Alternatively (probe mode), the backbone stays frozen and two independent
+linear heads are trained on features tapped from several blocks: a page
+probe on [CLS ; mean(patches)] and a patch probe on the concatenated patch
+tokens (heatmaps / composites). See ProbeConfig.
 
 Total parameters with DINOv3 ViT-L: ~302M (15% of the 2B budget).
 """
@@ -77,10 +77,10 @@ class SeerDetector(nn.Module):
         head_dropout: float = 0.1,
         probe_layers: Optional[List[int]] = None,
     ):
-        """`probe_layers` (from ProbeConfig.layers) switches to page-level
-        linear-probe mode: no dual heads, a single linear layer over
-        concatenated multi-block features instead. None (default) builds the
-        continuation-training model."""
+        """`probe_layers` (from ProbeConfig.layers) switches to frozen-backbone
+        linear-probe mode: a page head over concatenated [CLS ; mean(patches)]
+        plus a separate patch head over concatenated patch tokens (heatmaps).
+        None (default) builds the continuation-training model."""
         super().__init__()
         self.backbone_name = backbone
         self.backbone = load_backbone(backbone, pretrained)
@@ -93,11 +93,17 @@ class SeerDetector(nn.Module):
         if probe_layers is not None:
             self.probe = True
             self.probe_layers = self._resolve_probe_layers(probe_layers)
-            d = len(self.probe_layers) * 2 * self.hidden_size
+            n = len(self.probe_layers)
+            d_page = n * 2 * self.hidden_size
+            d_patch = n * self.hidden_size
             # LayerNorm aligns the very different scales of early vs late
             # block outputs; the map from standardized features to the logit
             # stays linear (a linear probe in the DINOv2/v3 eval sense).
-            self.probe_head = nn.Sequential(nn.LayerNorm(d), nn.Linear(d, 1))
+            # Page and patch heads do not share weights.
+            self.probe_head = nn.Sequential(nn.LayerNorm(d_page), nn.Linear(d_page, 1))
+            self.probe_patch_head = nn.Sequential(
+                nn.LayerNorm(d_patch), nn.Linear(d_patch, 1)
+            )
         else:
             self.probe = False
             self.global_head = nn.Sequential(
@@ -190,12 +196,12 @@ class SeerDetector(nn.Module):
         out = self.backbone(**kwargs)
         return self._split_tokens(out.last_hidden_state, images.shape[-2], images.shape[-1])
 
-    def layer_features(self, images: torch.Tensor) -> torch.Tensor:
-        """Page-level multi-layer features: (B, n_layers * 2 * hidden).
+    def probe_features(self, images: torch.Tensor):
+        """Tapped-block features for both probe heads, one frozen backbone pass.
 
-        Per tapped block, [CLS ; mean(patch tokens)] pooled, all blocks
-        concatenated. Runs the frozen backbone without grad - a linear probe
-        never needs activation gradients through the backbone.
+        Returns:
+          page  (B, n_layers * 2 * hidden)  - [CLS ; mean(patches)] per tap
+          patch (B, P, n_layers * hidden)    - concatenated patch tokens per tap
         """
         kwargs = dict(pixel_values=images, output_hidden_states=True)
         if self._interp_pos:
@@ -204,16 +210,24 @@ class SeerDetector(nn.Module):
         with torch.no_grad():
             out = self.backbone(**kwargs)
             # hidden_states = (embeddings, block_0_out, ..., block_{L-1}_out)
-            feats = []
+            page, patch = [], []
             for idx in self.probe_layers:
                 cls, patches = self._split_tokens(out.hidden_states[idx + 1], H, W)
-                feats.append(torch.cat([cls, patches.mean(dim=1)], dim=-1))
-        return torch.cat(feats, dim=-1)
+                page.append(torch.cat([cls, patches.mean(dim=1)], dim=-1))
+                patch.append(patches)
+        return torch.cat(page, dim=-1), torch.cat(patch, dim=-1)
+
+    def layer_features(self, images: torch.Tensor) -> torch.Tensor:
+        """Page-level multi-layer features: (B, n_layers * 2 * hidden)."""
+        page, _ = self.probe_features(images)
+        return page
 
     def forward(self, images: torch.Tensor) -> dict:
         if self.probe:
-            logits = self.probe_head(self.layer_features(images)).squeeze(-1)
-            return {"logits": logits, "patch_logits": None}  # page-level only
+            page, patches = self.probe_features(images)
+            logits = self.probe_head(page).squeeze(-1)
+            patch_logits = self.probe_patch_head(patches).squeeze(-1)
+            return {"logits": logits, "patch_logits": patch_logits}
         cls, patches = self.features(images)
         pooled = torch.cat([cls, patches.mean(dim=1)], dim=-1)
         logits = self.global_head(pooled).squeeze(-1)  # (B,)
@@ -230,7 +244,7 @@ def detection_loss(
 ):
     """Image-level BCE + per-patch BCE (the composite-training objective).
 
-    `patch_logits=None` (page-level linear probe) drops the patch term."""
+    `patch_logits=None` drops the patch term."""
     loss_g = F.binary_cross_entropy_with_logits(logits, labels)
     if patch_logits is None:
         return loss_g, {"loss_global": loss_g.item(), "loss_patch": 0.0}
@@ -278,7 +292,7 @@ def build_param_groups(model: SeerDetector, base_lr: float, head_lr: float, llrd
     the most decayed LR, heads get their own (higher) LR."""
 
     head_params = []
-    for head_name in ("global_head", "local_head", "probe_head"):
+    for head_name in ("global_head", "local_head", "probe_head", "probe_patch_head"):
         head = getattr(model, head_name, None)
         if head is not None:
             head_params += list(head.parameters())

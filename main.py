@@ -91,9 +91,12 @@ def main(argv=None):
         model = SeerDetector(backbone, pretrained=False, probe_layers=probe_layers)
         print(f"backbone: {backbone}")
         if model.probe:
-            head = sum(p.numel() for p in model.probe_head.parameters())
-            print(f"probe   : page-level linear head over blocks {model.probe_layers} "
-                  f"({head:,} params)")
+            page = sum(p.numel() for p in model.probe_head.parameters())
+            patch = sum(p.numel() for p in model.probe_patch_head.parameters())
+            print(
+                f"probe   : page + patch linear heads over blocks {model.probe_layers} "
+                f"(page {page:,} + patch {patch:,} params)"
+            )
         print(f"total  : {model.budget_report()}")
 
 

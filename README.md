@@ -32,8 +32,8 @@ Pangram Image is the current commercial SOTA. Their recipe, from the
 | Pillar | Pangram Image | Seer |
 |---|---|---|
 | Backbone | DINOv3, **full continuation fine-tuning** ("AI detection is not an ordinary downstream task") | same — DINOv3 ViT-L, full FT with layer-wise LR decay |
-| AI data | synthetic mirroring (VLM caption → regenerate) + scraped real-world AI images | 4,803 open generators (Community Forensics) + FLUX.1-dev + Midjourney/DALL-E/SD/Nano Banana Pro + SID full-synthetic + DDA COCO reconstructions + 9 modern families (Synthbuster) |
-| Real data | diverse web imagery; careful FPR control (WikiArt 0/2000, ReLAION 0.16% FPR) | paired reals from the mixture; WikiArt/folders FPR harness |
+| AI data | synthetic mirroring (VLM caption → regenerate) + scraped real-world AI images | Community Forensics (4,803 gens) + NTIRE (42 gens) + FLUX.1-dev + frontier commercial fakes + SID synthetic + GAS-Station v3/v4 |
+| Real data | diverse web imagery; careful FPR control (WikiArt 0/2000, ReLAION 0.16% FPR) | Community Forensics + NTIRE matched reals + jp1924/Laion400m-1 + Open Images V7; WikiArt/folders FPR harness |
 | Augmentation | strong "in the wild" simulation (crop, edit, compression) | symmetric wild-simulation at benchmark levels: JPEG q∈{90,70,50,30}, blur σ∈{0.5,1,2}, resize 0.5×/0.25×, noise σ∈{0.02,0.05,0.10}, jitter ±20%, crop 80%, WebP, grayscale |
 | Mixed images | composite training → heatmaps | same: cropped overlays in all four real/fake pairings, stacked multi-overlay, per-patch labels |
 | Scale | proprietary scrape of frontier generators (GPT Image, Nano Banana, FLUX, Midjourney, Grok) | everything above is public |
@@ -54,27 +54,25 @@ prints Pangram's published numbers next to ours for a direct comparison.
 
 Pangram: *"the specific data composition of both human and AI-generated
 imagery had the largest impact on the final accuracy of the model compared to
-anything else they tried."* Their early failure mode — synthetic mirrors that
-didn't match the in-the-wild distribution — is the thing our mixture is
-designed around:
+anything else they tried."* Full source list, weights, fetch commands, and
+held-out sets: **[docs/DATA_MIXTURE.md](docs/DATA_MIXTURE.md)**.
 
-| Source | What it covers | How |
-|---|---|---|
-| **NTIRE 2026** | 42 generators spanning 2022–2026, real/fake matched on resolution, aspect ratio and JPEG quality, with per-image degradation labels. Hero uses all 6 train shards (`shard: -1`). | `python get_datasets.py --tier 1` → `$SEER_DATA_ROOT/ntire`. Mixture type `ntire`; eval `--dataset ntire_val` / `ntire_val_hard` / `ntire_test` |
-| **CommunityForensics-Small** | 278K fakes from **4,803 generators** (LatDiff/PixDiff/GAN) + 278K paired reals. Generator *diversity* is the main driver of generalization to unseen generators (CVPR 2025). | `scripts/fetch_data.py comfor-small` → local parquet on `F:/techjam` (one-time download, then disk-speed reads) |
-| **FLUX-Reason-6M** | 5.9M **FLUX.1-dev** images (all fake). Stream; the full dump is ~882 GB. | mixture `type: hf` on `LucasFang/FLUX-Reason-6M`, `label: 1`. Optional slice: `scripts/fetch_data.py flux-reason-6m --max-shards 8` |
-| **Frontier fakes** | Midjourney, DALL-E, Stable Diffusion, **Nano Banana Pro** — fake class only. The Hub ClassLabel is inverted (`0=fake`, `1=real`). | `scripts/fetch_data.py frontier-fakes` (~3 GB train). Mixture remaps then `keep_label: 1` |
-| **SID_Set** | 210k train images. Three classes: real / full synthetic / tampered. We keep **full synthetic** only. | Stream `saberzl/SID_Set`. Optional slice: `scripts/fetch_data.py sid-set --max-shards 16` |
-| **DDA-Training-Set** | VAE reconstructions of COCO train, format-aligned (PNG, spatial). Fake half only. | 11-part zip, not streamable. `python get_datasets.py --only dda-train` then folders `dda-train/fake` |
-| **Synthbuster** | 9 modern families: DALLE2/3, Firefly, Midjourney v5, SD 1.3/1.4/2.1, SDXL | `scripts/download_synthbuster.py` (Zenodo, CC-BY) → `F:/techjam/synthbuster` |
-| **Your data / future generators** | anything new (GPT Image, Nano Banana, Riverflow...) drops in without code changes | any HF dataset (streamed) or local folder |
+The hero + probe configs (`seer_vitl_512.yaml`, `seer_probe.yaml`) share this
+weighted mix. Missing folder sources are dropped at train time, not fatal.
 
-Everything lives under `F:/techjam` (override with `SEER_DATA_ROOT`); the HF
-cache is redirected there too. Local parquet is read in streaming mode - no
-network, no arrow cache duplication - so repeated epochs cost nothing.
+| Source | Class | Weight | What it covers |
+|---|---|---|---|
+| **NTIRE 2026 train** | mixed | 0.30 | 42 gens (2022–2026), all 6 shards, real/fake matched |
+| **CommunityForensics-Small** | mixed | 0.26 | 4,803 open generators + paired reals. Eval is held out |
+| **GAS-Station v4 / v3** | fake | 0.11 / 0.10 | weekly open-model dumps after `wire_gasstation.py` |
+| **laion400m-1** | real | 0.10 | `jp1924/Laion400m-1` images in parquet (not a URL scrape) |
+| **Open Images V7** | real | 0.10 | validation + test photographs |
+| **FLUX-Reason-6M** | fake | 0.09 | 5.9M FLUX.1-dev; streamed |
+| **Frontier fakes** | fake | 0.08 | Midjourney / DALL-E / SD / Nano Banana Pro (label inverted) |
+| **SID_Set** | fake | 0.06 | full-synthetic only (drop real + tampered) |
 
-Weights are per-source sampling probabilities in the config, so no family
-dominates.
+Roots: `$SEER_DATA_ROOT` (defaults to `/workspace/data` when that mount
+exists, else `F:/techjam`). Local parquet is read in streaming mode.
 
 ## Setup
 
@@ -101,18 +99,18 @@ uv run python main.py info --backbone tiny
 # 2. quick end-to-end training run on streamed data (minutes, 12GB GPU)
 uv run python main.py train --config configs/seer_vits_debug.yaml
 
-# 3. build the data mixture (everything lands in F:/techjam, or $SEER_DATA_ROOT)
+# 3. build the data mixture (see docs/DATA_MIXTURE.md)
+#    everything lands in $SEER_DATA_ROOT (/workspace/data or F:/techjam)
 uv run python get_datasets.py --list                      # the full plan; downloads nothing
-uv run python get_datasets.py --tier 1                    # NTIRE train/val/test + COCO (~25 GB)
+uv run python get_datasets.py --tier 1                    # NTIRE train/val/test + COCO
 uv run python dataset_stats.py --tier 1                   # remote metadata only, no images
 uv run scripts/fetch_data.py comfor-small                 # full ~260GB; add --max-shards 30 for a slice
 uv run scripts/fetch_data.py frontier-fakes               # MJ / DALL-E / SD / Nano Banana Pro (~3 GB)
-# FLUX-Reason-6M is streamed (882 GB) — optional local slice:
-uv run scripts/fetch_data.py flux-reason-6m --max-shards 8
+uv run scripts/fetch_data.py flux-reason-6m --max-shards 8 # optional; full dump is streamed
 uv run scripts/fetch_data.py sid-set --max-shards 16
-uv run python get_datasets.py --only dda-train            # 11-part zip, ~113 GB
-uv run scripts/download_synthbuster.py
-uv run scripts/wire_gasstation.py                         # unpack GAS-Station tarballs for the hero mixture
+uv run scripts/wire_gasstation.py --versions v3 v4        # unpack GAS-Station tarballs
+uv run scripts/download_laion400m.py --max-shards 12 --max-images 150000 --min-side 512
+uv run scripts/download_open_images.py --workers 32 --max-gb 70
 
 # 4. full training (hero config = the mixture above)
 uv run python main.py train --config configs/seer_vitl_512.yaml          # A100-class
@@ -246,9 +244,9 @@ head, so probe checkpoints produce verdicts but no heatmaps.
 ## Limitations (honest ones)
 
 - Frontier-generator coverage (GPT Image, Nano Banana, Grok, Riverflow) is
-  API-gated; the public mix covers those *families* via FLUX-Reason, frontier
-  fakes, and Synthbuster, not the exact latest APIs. Swap in real outputs
-  via any folder/HF source as they become available.
+  API-gated; the public mix covers those *families* via NTIRE, FLUX-Reason,
+  frontier fakes, and GAS-Station, not the exact latest APIs. Swap in real
+  outputs via any folder/HF source as they become available.
 - CommunityForensics-Small is SD-derivative-heavy — the weighted mixture
   mitigates that.
 - No deepfake/face-swap detection (Pangram's initial release doesn't either).

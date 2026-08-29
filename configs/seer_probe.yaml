@@ -1,14 +1,18 @@
-# Page-level multi-layer linear probe - the cheap ablation / baseline
-# against continuation fine-tuning (seer_vitl_512.yaml).
+# Multi-layer linear probe - the cheap ablation / baseline against
+# continuation fine-tuning (seer_vitl_512.yaml).
 #
-# The backbone stays frozen; a single linear layer is trained on features
-# tapped from several transformer blocks: early blocks carry high-frequency
-# statistics (where generator fingerprints live), mid and late blocks carry
-# increasingly semantic features. One logit per image (page), no patch
-# heatmaps. Set head_lr ~1e-3: with a frozen backbone the linear head wants
-# a larger LR than fine-tuning heads do.
+# The backbone stays frozen; two independent linear heads are trained on
+# features tapped from several transformer blocks: early blocks carry
+# high-frequency statistics (where generator fingerprints live), mid and
+# late blocks carry increasingly semantic features.
+#   page head  - [CLS ; mean(patches)] concatenated across taps -> 1 logit
+#   patch head - concatenated patch tokens -> per-patch logits (heatmaps)
+# Set head_lr ~1e-3: with a frozen backbone the linear heads want a larger
+# LR than fine-tuning heads do.
 
-backbone: facebook/dinov3-vitl16-pretrain-lvd1689m  # gated: accept license + hf auth login
+# Official facebook/dinov3-vitl16-pretrain-lvd1689m is gated (manual review).
+# Ungated transformers-format copy of the same ViT-L/16 LVD-1689M weights.
+backbone: camenduru/dinov3-vitl16-pretrain-lvd1689m
 pretrained: true
 res: 512
 batch_size: 64          # no backbone grads -> bigger batches fit
@@ -21,7 +25,7 @@ bf16: true
 grad_checkpointing: false
 ema_decay: 0.999
 eval_every: 2000
-log_every: 50
+log_every: 10
 out_dir: runs/seer_probe
 
 probe:
@@ -29,18 +33,23 @@ probe:
   layers: []            # auto: evenly spaced taps -> [6, 12, 18, 23] on ViT-L
   # layers: [3, 9, 15, -1]   # explicit: early -> late (0-based, -1 = final block)
 
+decode_workers: 16     # JPEG/aug is the CPU bottleneck; 48 cores available
+loader_readers: 4       # parallel mixture iterators (parquet I/O, GIL-free)
+prefetch_depth: 6      # collated batches queued ahead of the GPU
+
 data:
   source: mixture
   val_max_samples: 4096
-  # Same mixture + weights as seer_vitl_512.yaml (recency-tilted, balanced
-  # across fake sources) so the probe/continuation comparison is honest.
+  balance_labels: true  # 50/50 real/fake, then weights within each class
+  # Same mixture + weights as seer_vitl_512.yaml (see docs/DATA_MIXTURE.md)
+  # so the probe/continuation comparison is honest.
   sources:
     - name: comfor
       type: comfor
       dataset: OwensLab/CommunityForensics-Small   # train only; Eval is held out
       split: train
       local_dirs: [/workspace/data/commfor-small]
-      shuffle_buffer: 8192
+      shuffle_buffer: 1024
       weight: 0.26            # ~18% of fake mass + 0.13 reals (was 0.35)
 
     - name: flux-reason
@@ -49,7 +58,7 @@ data:
       image_col: image
       label: 1
       local_dirs: [/workspace/data/flux-reason-6m]
-      shuffle_buffer: 2048
+      shuffle_buffer: 512
       weight: 0.09            # single 2024 family; trimmed for balance
 
     - name: frontier-fakes
@@ -61,7 +70,7 @@ data:
       label_map: {0: 1, 1: 0, fake: 1, real: 0}
       keep_label: 1
       local_dirs: [/workspace/data/frontier-fakes]
-      shuffle_buffer: 1024
+      shuffle_buffer: 256
       weight: 0.08            # frontier commercial; capped by ~5k train fakes
 
     - name: sid-set
@@ -74,7 +83,7 @@ data:
       label_map: {0: 0, 1: 1}
       keep_label: 1
       local_dirs: [/workspace/data/sid-set]
-      shuffle_buffer: 2048
+      shuffle_buffer: 512
       weight: 0.06            # untagged, older-skew generators
 
     - name: ntire
@@ -93,6 +102,16 @@ data:
       fake_dirs: [/workspace/data/gs-images-v4/wired/images.txt]
       weight: 0.11              # latest weekly dumps - highest recency
 
+    - name: laion400m-1
+      type: folders
+      real_dirs: [/workspace/data/laion400m-1/real]
+      weight: 0.10
+
+    - name: open-images-v7
+      type: folders             # scripts/download_open_images.py (val + test)
+      real_dirs: [/workspace/data/open-images-v7]
+      weight: 0.10
+
 augment:
   jpeg_prob: 0.75
   jpeg_quality: [90, 70, 50, 30]
@@ -104,4 +123,4 @@ augment:
   downscale_prob: 0.30
 
 composite:
-  prob: 0.25            # page label stays "contains AI content"; patch labels unused
+  prob: 0.25            # patch probe trains on composite patch labels (heatmaps)

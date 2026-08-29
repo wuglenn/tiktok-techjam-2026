@@ -41,7 +41,7 @@ def infer(
         print(f"{path}: P(AI)={prob:.4f} -> {rec['label']}")
 
         if heat is None:
-            print("  (page-level probe: no per-patch heatmap)")
+            print("  (no per-patch heatmap for this checkpoint)")
         elif out_dir:
             import os
 

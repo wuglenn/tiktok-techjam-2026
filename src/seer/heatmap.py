@@ -22,8 +22,8 @@ def predict_and_explain(
     res: int,
     device: Optional[torch.device] = None,
 ) -> Tuple[float, np.ndarray]:
-    """Returns (prob_ai, heatmap HxW in [0,1]) - heatmap is None for
-    page-level probe checkpoints (no local head)."""
+    """Returns (prob_ai, heatmap HxW in [0,1]) - heatmap is None if the
+    checkpoint has no per-patch head."""
     device = device or next(model.parameters()).device
     model.eval()
     x = eval_transform(image, res)[None].to(device)

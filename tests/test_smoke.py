@@ -291,6 +291,22 @@ def test_mixture_dataset(tmp_dirs=None):
             load_sample_image(s).size  # every sample decodes
         assert n[0] > 0 and n[1] > 0
 
+        balanced = MixtureDataset(
+            [
+                SourceSpec(name="a", type="folders", weight=0.1,
+                           real_dirs=[str(d / "real")], fake_dirs=[str(d / "fake")]),
+                SourceSpec(name="b", type="folders", weight=0.9,
+                           fake_dirs=[str(d / "fake")]),
+            ],
+            seed=0,
+            balance_labels=True,
+        )
+        n = {0: 0, 1: 0}
+        it = iter(balanced)
+        for _ in range(200):
+            n[next(it)["label"]] += 1
+        assert abs(n[0] - n[1]) < 40, n  # ~50/50 despite 9:1 fake source weight
+
         # config plumbing: mixture via yaml-style dict
         cfg = load_config(overrides=[
             "backbone=tiny", "pretrained=false", "res=224", "max_steps=1",
