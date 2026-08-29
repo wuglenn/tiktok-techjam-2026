@@ -246,6 +246,8 @@ class TrainConfig:
     num_workers: int = 0  # DataLoader processes; 0 = in-process (safer after CUDA)
     loader_readers: int = 1  # threads independently iterating the mixture
     prefetch_depth: int = 2  # collated batches queued ahead of the GPU
+    heatmap_every: int = 0  # dump predicted heatmaps; 0 = off
+    heatmap_n: int = 8  # images per heatmap dump
 
     data: DataConfig = field(default_factory=DataConfig)
     augment: AugmentConfig = field(default_factory=AugmentConfig)

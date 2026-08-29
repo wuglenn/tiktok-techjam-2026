@@ -43,6 +43,9 @@ hf_cache/
 # --- Generated sample images ---
 samples/
 
+# --- Training runs (logs, heatmaps, checkpoints) ---
+runs/
+
 # --- Jupyter ---
 .ipynb_checkpoints/
 

@@ -26,6 +26,8 @@ grad_checkpointing: false
 ema_decay: 0.999
 eval_every: 2000
 log_every: 10
+heatmap_every: 50
+heatmap_n: 8
 out_dir: runs/seer_probe
 
 probe:

@@ -143,6 +143,7 @@ def test_probe_end_to_end():
             "head_lr=1.0e-3", "warmup_steps=1", "eval_every=2", "log_every=1",
             "ema_decay=0.999", "grad_checkpointing=true",
             "probe.enabled=true", "probe.layers=[0,2]",
+            "heatmap_every=1", "heatmap_n=2",
             f"out_dir={d.as_posix()}/run",
         ])
         cfg.data.source = "folders"
@@ -153,6 +154,8 @@ def test_probe_end_to_end():
         run(cfg)
         last = os.path.join(d, "run", "last.pt")
         assert os.path.exists(last)
+        hm = os.path.join(d, "run", "heatmaps", "step_000001.png")
+        assert os.path.exists(hm)
         m, cfg_dict, _ = load_checkpoint(last)
         assert getattr(m, "probe", False) and m.probe_layers == [0, 2]
         assert hasattr(m, "probe_patch_head")

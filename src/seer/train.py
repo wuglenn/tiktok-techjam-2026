@@ -27,6 +27,7 @@ from .data import (
     count_parquet_rows,
     parquet_files,
 )
+from .heatmap import save_batch_heatmaps
 from .model import SeerDetector, EMA, build_param_groups, detection_loss, save_checkpoint
 
 # Approximate number of rows in streaming datasets (for epochs -> steps).
@@ -339,6 +340,37 @@ def run(cfg: TrainConfig):
                 f"{_gpu_mem()}"
             )
             running = {"loss": 0.0, "acc": 0.0, "n": 0}
+
+        if (
+            cfg.heatmap_every > 0
+            and out.get("patch_logits") is not None
+            and (n_done == 1 or n_done % cfg.heatmap_every == 0 or n_done == total_steps)
+        ):
+            was_training = model.training
+            try:
+                model.eval()
+                with torch.no_grad():
+                    with torch.autocast(
+                        device.type, dtype=torch.bfloat16,
+                        enabled=(device.type == "cuda" and cfg.bf16),
+                    ):
+                        vis = model(images)
+                path = os.path.join(cfg.out_dir, "heatmaps", f"step_{n_done:06d}.png")
+                save_batch_heatmaps(
+                    path,
+                    images,
+                    vis["patch_logits"],
+                    labels,
+                    vis["logits"],
+                    max_n=cfg.heatmap_n,
+                    title=f"step {n_done}",
+                )
+                _log(f"[heatmap] {path}")
+            except Exception as exc:
+                _log(f"[heatmap] dump failed: {exc}")
+            finally:
+                if was_training:
+                    model.train()
 
         # ------------------------------------------------------- evaluation
         if (step + 1) % cfg.eval_every == 0 or (step + 1) == total_steps:
