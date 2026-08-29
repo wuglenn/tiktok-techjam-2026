@@ -8,6 +8,8 @@ and (c) shipped with per-image ground truth for the degradations applied.
 That third property is unusual and valuable: the validation labels record
 which distortions hit each image and at what severity, so per-degradation
 error analysis needs no extra instrumentation.
+
+Download with ``python get_datasets.py --tier 1`` (or ``--only ntire-train``).
 """
 
 from __future__ import annotations
@@ -21,11 +23,19 @@ from typing import Iterator, Sequence
 import numpy as np
 from PIL import Image
 
-from .paths import NTIRE_ROOT
+from .paths import ntire_root
 
-TRAIN_DIR = NTIRE_ROOT / "NTIRE-RobustAIGenDetection-train"
-VAL_DIR = NTIRE_ROOT / "NTIRE-RobustAIGenDetection-val"
-TEST_DIR = NTIRE_ROOT / "NTIRE-RobustAIGenDetection-test-public"
+
+def _train_dir() -> Path:
+    return ntire_root() / "NTIRE-RobustAIGenDetection-train"
+
+
+def _val_dir() -> Path:
+    return ntire_root() / "NTIRE-RobustAIGenDetection-val"
+
+
+def _test_dir() -> Path:
+    return ntire_root() / "NTIRE-RobustAIGenDetection-test-public"
 
 
 @dataclass(frozen=True)
@@ -84,16 +94,16 @@ def read_labelled_split(images_dir: Path, labels_csv: Path) -> list[Sample]:
 
 def load_val(hard: bool = False) -> list[Sample]:
     suffix = "_hard" if hard else ""
-    return read_labelled_split(VAL_DIR / f"val_images{suffix}", VAL_DIR / f"val{suffix}_labels.csv")
+    return read_labelled_split(_val_dir() / f"val_images{suffix}", _val_dir() / f"val{suffix}_labels.csv")
 
 
 def load_test() -> list[Sample]:
-    return read_labelled_split(TEST_DIR / "test_images", TEST_DIR / "test_labels.csv")
+    return read_labelled_split(_test_dir() / "test_images", _test_dir() / "test_labels.csv")
 
 
 def load_train_shard(shard: int = 0) -> list[Sample]:
     """Shards are distribution-matched, so one shard is a valid training set."""
-    base = TRAIN_DIR / f"shard_{shard}"
+    base = _train_dir() / f"shard_{shard}"
     inner = base / f"shard_{shard}"
     root = inner if inner.exists() else base
     labels_csv = root / "labels.csv"
@@ -105,6 +115,18 @@ def load_train_shard(shard: int = 0) -> list[Sample]:
         labels_csv = found[0]
         images_dir = labels_csv.parent / "images"
     return read_labelled_split(images_dir, labels_csv)
+
+
+def load_split(split: str = "train", shard: int = 0, hard: bool = False) -> list[Sample]:
+    """Dispatch to the matching NTIRE split loader."""
+    key = split.replace("-", "_")
+    if key in ("val", "validation"):
+        return load_val(hard=hard)
+    if key in ("val_hard", "hard"):
+        return load_val(hard=True)
+    if key == "test":
+        return load_test()
+    return load_train_shard(shard)
 
 
 def stratified_subset(

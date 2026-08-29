@@ -1,23 +1,56 @@
-# Datasets and derived caches. Tens of GB -- never commit.
-data/
-
-# Model checkpoints and large result artifacts
-*.pt
-*.pth
-*.npy
-*.npz
-
-# Python
+# --- Python ---
 __pycache__/
 *.py[cod]
-.venv/
 *.egg-info/
-.pytest_cache/
 build/
 dist/
 
-# Editors / OS
-.vscode/
-.idea/
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- Testing ---
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# --- Linting ---
+.ruff_cache/
+
+# --- Secrets / environment ---
+.env
+.env.*
+
+# --- Datasets (scripts/fetch_data.py, download_*.py) ---
+data/
+
+# --- Model weights (training checkpoints, HF/diffusers downloads) ---
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+*.onnx
+*.msgpack
+*.h5
+
+# --- HF / diffusers caches ---
+.cache/
+hf_cache/
+
+# --- Generated sample images ---
+samples/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- OS ---
 .DS_Store
 Thumbs.db
+Desktop.ini
+
+# --- Editors ---
+.idea/
+.vscode/

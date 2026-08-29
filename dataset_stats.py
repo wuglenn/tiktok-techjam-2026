@@ -25,7 +25,7 @@ from typing import Any
 
 sys.path.insert(0, "src")
 
-from aigcdet.datasets_registry import DatasetSpec, select  # noqa: E402
+from seer.datasets_registry import DatasetSpec, select  # noqa: E402
 
 HF_API = "https://huggingface.co/api"
 DS_SERVER = "https://datasets-server.huggingface.co"
@@ -330,13 +330,14 @@ def scan_local() -> list[dict]:
     """
     import csv as _csv
 
-    from aigcdet.paths import NTIRE_ROOT
+    from seer.paths import ntire_root
 
+    root = ntire_root()
     targets = [
-        ("ntire-train shard_0", NTIRE_ROOT / "NTIRE-RobustAIGenDetection-train" / "shard_0" / "shard_0" / "labels.csv"),
-        ("ntire-val", NTIRE_ROOT / "NTIRE-RobustAIGenDetection-val" / "val_labels.csv"),
-        ("ntire-val-hard", NTIRE_ROOT / "NTIRE-RobustAIGenDetection-val" / "val_hard_labels.csv"),
-        ("ntire-test", NTIRE_ROOT / "NTIRE-RobustAIGenDetection-test-public" / "test_labels.csv"),
+        ("ntire-train shard_0", root / "NTIRE-RobustAIGenDetection-train" / "shard_0" / "shard_0" / "labels.csv"),
+        ("ntire-val", root / "NTIRE-RobustAIGenDetection-val" / "val_labels.csv"),
+        ("ntire-val-hard", root / "NTIRE-RobustAIGenDetection-val" / "val_hard_labels.csv"),
+        ("ntire-test", root / "NTIRE-RobustAIGenDetection-test-public" / "test_labels.csv"),
     ]
 
     records = []

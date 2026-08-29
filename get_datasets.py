@@ -29,8 +29,8 @@ from pathlib import Path
 
 sys.path.insert(0, "src")
 
-from aigcdet.datasets_registry import DatasetSpec, commfor_shard_selection, select  # noqa: E402
-from aigcdet.paths import DATA_ROOT  # noqa: E402
+from seer.datasets_registry import DatasetSpec, commfor_shard_selection, select  # noqa: E402
+from seer.paths import DATA_ROOT  # noqa: E402
 
 
 def human(gb: float) -> str:
