@@ -127,6 +127,7 @@ uv run python main.py train --config configs/seer_vitl_512.yaml \
 uv run python main.py eval --checkpoint runs/seer_vitl/best.pt --dataset comfor_eval
 uv run python main.py eval --checkpoint runs/seer_vitl/best.pt --dataset comfor_eval --augmented   # 1024px + JPEG q50
 uv run python main.py eval --checkpoint runs/seer_vitl/best.pt --dataset ntire_val
+uv run python main.py eval --checkpoint runs/seer_vitl/best.pt --dataset ntire_test   # HF public test (2.5k)
 uv run python main.py eval --checkpoint runs/seer_vitl/best.pt --dataset folders \
     --real-dir data/wikiart --out-json wikiart_fpr.json                   # FPR eval
 
@@ -191,7 +192,8 @@ Even the largest supported backbone stays under budget; the default leaves
   real-over-real (label stays real) — and patch labels come from each
   overlay's footprint in patch-grid space (last layer wins). Overlays are
   random crops of the source (own scale / aspect / flip), a sample can
-  receive a stack of up to 3, and two overlay modes mix by default:
+  receive n ~ Uniform{1,...,k} overlays (k = max_overlays, default 3),
+  and two overlay modes mix by default:
   - `blend` — smooth bilinear alpha (seamless, diffusion-style mixes)
   - `paste` — opaque hard-edged overlay with a ~2px feathered border
     (sticker / screenshot-style content drops)
@@ -200,7 +202,7 @@ Even the largest supported backbone stays under budget; the default leaves
   JPEG q∈{90,70,50,30} · blur σ∈{0.5,1.0,2.0} · resize 0.5×/0.25× ·
   Gaussian noise σ∈{0.02,0.05,0.10} · jitter ±20% · center crop 80% ·
   plus WebP, grayscale, hflip.
-- 512×512 input (patch grid 32×32), effective batch 32, ~60k steps.
+- 512×512 input (patch grid 32×32), effective batch 108 (54 × 2 accum), ~60k steps.
 
 ### Page-level multi-layer linear probe (ablation)
 
@@ -238,7 +240,12 @@ head, so probe checkpoints produce verdicts but no heatmaps.
   a per-level robustness table, matching how GenImage / OmniAID / the
   Pangram augmented eval report robustness.
 - **NTIRE 2026** — `--dataset ntire_val` / `ntire_val_hard` / `ntire_test`
-  after `python get_datasets.py --tier 1`.
+  after `python get_datasets.py --tier 1`. `ntire_test` is the labelled
+  2.5k public test from
+  [`deepfakesMSU/NTIRE-RobustAIGenDetection-test-public`](https://huggingface.co/datasets/deepfakesMSU/NTIRE-RobustAIGenDetection-test-public)
+  (clean vs distorted + per-distortion). The 512 recipe also scores it
+  every `eval_every` steps (`eval_datasets: [ntire_test]`); `best.pt`
+  still follows the train-distribution val slice.
 - **FPR sets** — real-only folders (WikiArt etc.).
 - Metrics: macro (balanced) accuracy, mAP (AP on fake class), AUROC, FPR/FNR.
   Published Pangram numbers are printed next to ours for direct comparison.

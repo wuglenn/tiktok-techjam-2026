@@ -21,13 +21,23 @@ from seer.config import SourceSpec, load_config
 from seer.data import BatchBuilder, build_train_dataset, load_sample_image
 from seer.eval import compute_metrics
 from seer.heatmap import predict_and_explain, save_heatmap
-from seer.model import SeerDetector, EMA, build_param_groups, detection_loss
+from seer.model import SeerDetector, EMA, build_param_groups, detection_loss, _patch_pos_weight
 from seer.train import cosine_schedule
 
 
 def _rand_pil(size=512, rng=random.Random(0)):
     arr = rng.randrange(256) + np.random.RandomState(rng.randrange(1 << 30)).randint(0, 255, (size, size, 3), dtype=np.uint8)
     return Image.fromarray(arr)
+
+
+def test_attn_auto_falls_back_to_sdpa():
+    from seer.model import resolve_attn_implementation
+
+    assert resolve_attn_implementation("sdpa") == "sdpa"
+    assert resolve_attn_implementation("auto") in {
+        "flash_attention_4", "flash_attention_3", "flash_attention_2", "sdpa",
+    }
+    print("attn resolve OK")
 
 
 def test_budget_and_forward():
@@ -60,6 +70,7 @@ def test_train_step_and_ema():
         opt.step()
         ema.update(model)
         assert torch.isfinite(loss), loss
+        assert stats["patch_pos_weight"] >= 1.0
     assert any(not torch.allclose(a, b) for a, b in zip(
         list(model.state_dict().values()), list(ema.shadow.values())))
     print(f"train step OK (loss={loss.item():.4f})")
@@ -219,6 +230,24 @@ def test_perturbations():
     print(f"perturbations OK ({len(PERTURBATIONS)} levels)")
 
 
+def test_patch_pos_weight():
+    y = torch.zeros(10, 4)
+    y[0, 0] = 1.0
+    w = _patch_pos_weight(y)
+    assert abs(float(w) - 39.0) < 1e-5
+    assert _patch_pos_weight(torch.ones(8)) is None
+    assert _patch_pos_weight(torch.zeros(8)) is None
+    logits = torch.zeros(8)
+    labels = torch.zeros(8)
+    pl = torch.zeros(8, 4)
+    pl[0, 0] = 1.0
+    _, bal = detection_loss(logits, torch.zeros(8, 4), labels, pl, balance_patch=True)
+    _, raw = detection_loss(logits, torch.zeros(8, 4), labels, pl, balance_patch=False)
+    assert bal["patch_pos_weight"] == 31.0
+    assert raw["patch_pos_weight"] == 1.0
+    print("patch pos_weight OK")
+
+
 def test_metrics_and_heatmap(tmp_path=None):
     rng = np.random.RandomState(0)
     probs = rng.rand(200)
@@ -226,7 +255,12 @@ def test_metrics_and_heatmap(tmp_path=None):
     m = compute_metrics(probs, labels)
     assert 0 <= m["macro_accuracy"] <= 1
     assert 0 <= m["mAP"] <= 1
+    assert 0 <= m["f1"] <= 1
+    assert 0 <= m["auroc"] <= 1
     assert m["n"] == 200
+    perfect = compute_metrics(np.array([0.1, 0.9, 0.8, 0.05]), np.array([0, 1, 1, 0]))
+    assert perfect["f1"] == 1.0
+    assert perfect["auroc"] == 1.0
 
     model = SeerDetector("tiny", pretrained=False).eval()
     img = _rand_pil(400, random.Random(1))
@@ -365,6 +399,7 @@ if __name__ == "__main__":
     test_composite_combinations()
     test_augment_pipeline()
     test_perturbations()
+    test_patch_pos_weight()
     test_metrics_and_heatmap()
     test_schedule()
     test_mixture_dataset()

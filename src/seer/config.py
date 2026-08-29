@@ -167,8 +167,10 @@ class CompositeConfig:
     fake_on_real / real_on_fake / fake_on_fake
                       - weights splitting the composites on fake samples
                         between the three label-1 pairings
-    max_overlays      - pastes per composited sample (uniform 1..max)
+    max_overlays      - k; each composited sample gets n ~ Uniform{1,...,k} pastes
     patch_loss_weight - weight of the per-patch BCE in the total loss
+    balance_patch     - pos_weight patch BCE by n_real/n_fake patches so
+                        sparse FoR fake crops are not drowned out
     mode              - how each overlay is laid over the base:
                          "blend" soft alpha compositing (diffusion-style
                                 seamless mixes)
@@ -184,6 +186,7 @@ class CompositeConfig:
     fake_on_fake: float = 0.25
     max_overlays: int = 3
     patch_loss_weight: float = 0.5
+    balance_patch: bool = True
     mode: str = "mixed"
 
 
@@ -229,6 +232,7 @@ class TrainConfig:
     head_lr: float = 1.0e-4
     llrd: float = 0.8  # layer-wise LR decay for the backbone
     optimizer: str = "muon"  # muon (2D hidden) + AdamW (rest); or "adamw"
+    attn_implementation: str = "auto"  # auto: FA4→FA3→FA2→sdpa
     muon_momentum: float = 0.95
     muon_ns_steps: int = 5
     muon_adjust_lr: str = "match_rms_adamw"  # or "original" (Keller spectral)
@@ -242,6 +246,11 @@ class TrainConfig:
 
     # bookkeeping
     eval_every: int = 1000
+    # Extra held-out sets scored at eval_every (names from seer.eval:
+    # ntire_test, ntire_val, ntire_val_hard, comfor_eval, ...).
+    # Official NTIRE public test is 2.5k labelled images from
+    # deepfakesMSU/NTIRE-RobustAIGenDetection-test-public.
+    eval_datasets: List[str] = field(default_factory=list)
     log_every: int = 20
     seed: int = 0
     out_dir: str = "runs/seer"
@@ -251,7 +260,7 @@ class TrainConfig:
     loader_readers: int = 1  # threads independently iterating the mixture
     prefetch_depth: int = 2  # collated batches queued ahead of the GPU
     heatmap_every: int = 0  # dump predicted heatmaps; 0 = off
-    heatmap_n: int = 8  # images per heatmap dump
+    heatmap_n: int = 4  # rows in the joint heatmap grid
 
     data: DataConfig = field(default_factory=DataConfig)
     augment: AugmentConfig = field(default_factory=AugmentConfig)

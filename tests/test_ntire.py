@@ -90,3 +90,95 @@ def test_registry_tiers():
     shards = commfor_shard_selection()
     assert 70 in shards and 92 in shards
     assert shards == sorted(shards)
+
+
+def _write_train_shard(root: Path, shard: int, names: tuple[str, ...]) -> None:
+    inner = root / f"shard_{shard}" / f"shard_{shard}"
+    images = inner / "images"
+    images.mkdir(parents=True)
+    rows = ["image_name,label,distortions,distortion_scales,is_distorted"]
+    for i, name in enumerate(names):
+        Image.new("RGB", (4, 4)).save(images / name)
+        rows.append(f"{name},{i % 2},[],[],0")
+    (inner / "labels.csv").write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+
+def test_load_split_caches(tmp_path: Path, monkeypatch):
+    import seer.ntire as ntire
+
+    _write_train_shard(tmp_path, 0, ("a.jpg", "b.jpg"))
+    monkeypatch.setattr(ntire, "_train_dir", lambda: tmp_path)
+    first = load_split("train", shard=0)
+    second = load_split("train", shard=0)
+    assert first is second
+    assert ntire.split_is_cached("train", shard=0)
+
+
+def test_ntire_stream_cycle_and_one_pass(tmp_path: Path, monkeypatch):
+    import seer.ntire as ntire
+    from seer.data import NtireStream
+
+    _write_train_shard(tmp_path, 0, ("a.jpg", "b.jpg"))
+    monkeypatch.setattr(ntire, "_train_dir", lambda: tmp_path)
+
+    once = list(NtireStream(split="train", shard=0, seed=0, cycle=False))
+    assert len(once) == 2
+    assert {s["image_name"] for s in once} == {"a.jpg", "b.jpg"}
+    assert all("is_distorted" in s and "distortions" in s for s in once)
+
+    cycling = NtireStream(split="train", shard=0, seed=0, cycle=True)
+    it = iter(cycling)
+    got = [next(it) for _ in range(4)]
+    assert len(got) == 4
+    assert {s["image_name"] for s in got} == {"a.jpg", "b.jpg"}
+
+
+def test_build_val_prefers_ntire():
+    from seer.config import DataConfig, SourceSpec, TrainConfig
+    from seer.data import build_val_dataset
+
+    cfg = TrainConfig(
+        data=DataConfig(
+            source="mixture",
+            sources=[
+                SourceSpec(name="comfor", type="comfor", weight=0.5, shuffle_buffer=8192),
+                SourceSpec(name="ntire", type="ntire", weight=0.3, shard=-1),
+            ],
+            val_max_samples=64,
+        )
+    )
+    ds = build_val_dataset(cfg)
+    assert [s.type for s in ds.sources] == ["ntire"]
+    assert ds.sources[0].shuffle_buffer <= 256
+    assert ds.sources[0].max_samples == 64
+
+
+def test_eval_dataset_names_and_groups():
+    from seer.eval import _group_metrics, known_eval_datasets
+
+    names = known_eval_datasets()
+    assert "ntire_test" in names
+    assert "ntire_test_public" in names
+    m = _group_metrics([0.1, 0.9, 0.8, 0.2], [0, 1, 1, 0], ["clean", "distorted", "clean", "distorted"])
+    assert set(m) == {"clean", "distorted"}
+    assert m["clean"]["n"] == 2
+
+
+def test_cached_val_samples_reused(monkeypatch):
+    from seer import train as T
+    from seer.config import DataConfig, TrainConfig
+
+    T._VAL_SAMPLE_CACHE.clear()
+    calls = {"n": 0}
+
+    def fake_build(cfg):
+        calls["n"] += 1
+        return [{"label": 0, "image_name": "a"}, {"label": 1, "image_name": "b"}]
+
+    monkeypatch.setattr(T, "build_val_dataset", fake_build)
+    cfg = TrainConfig(data=DataConfig(val_max_samples=2, source="mixture"))
+    first = T._cached_val_samples(cfg)
+    second = T._cached_val_samples(cfg)
+    assert first is second
+    assert calls["n"] == 1
+    assert [s["image_name"] for s in first] == ["a", "b"]

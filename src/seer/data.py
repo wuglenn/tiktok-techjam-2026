@@ -429,36 +429,50 @@ class NtireStream:
         max_samples: Optional[int] = None,
         seed: int = 0,
         clean_only: bool = False,
+        cycle: bool = True,
     ):
-        from .ntire import load_split
+        from .ntire import load_split, split_is_cached
 
-        print(f"[data] ntire loading {split} shard={shard}...", flush=True)
+        cached = split_is_cached(split, shard, hard)
+        if not cached:
+            print(f"[data] ntire loading {split} shard={shard}...", flush=True)
         samples = load_split(split, shard=shard, hard=hard)
         if clean_only:
             samples = [s for s in samples if not s.is_distorted]
         self.samples = samples
         self.max_samples = max_samples
         self.seed = seed
+        self.cycle = cycle
+        tag = "cached" if cached else "indexed"
         print(
-            f"[data] ntire {split} shard={shard}: {len(samples)} labelled images",
+            f"[data] ntire {split} shard={shard}: {len(samples)} labelled images ({tag})",
             flush=True,
         )
 
     def __iter__(self):
-        items = list(self.samples)
-        rng = random.Random(self.seed)
-        rng.shuffle(items)
-        if self.max_samples:
-            items = items[: self.max_samples]
-        for s in items:
-            yield {
-                "image": None,
-                "image_path": str(s.path),
-                "label": int(s.label),
-                "generator": "",
-                "architecture": "",
-                "image_name": s.path.name,
-            }
+        if not self.samples:
+            return
+        epoch = 0
+        while True:
+            items = list(self.samples)
+            rng = random.Random(self.seed + epoch * 1009)
+            rng.shuffle(items)
+            if self.max_samples:
+                items = items[: self.max_samples]
+            for s in items:
+                yield {
+                    "image": None,
+                    "image_path": str(s.path),
+                    "label": int(s.label),
+                    "generator": "",
+                    "architecture": "",
+                    "image_name": s.path.name,
+                    "distortions": s.distortions,
+                    "is_distorted": bool(s.is_distorted),
+                }
+            if not self.cycle:
+                return
+            epoch += 1
 
 
 def assert_not_comfor_eval_train(dataset: str = "", local_dirs: Optional[List[str]] = None) -> None:
@@ -665,17 +679,26 @@ def build_train_dataset(cfg) -> torch.utils.data.Dataset:
 
 
 def build_val_dataset(cfg) -> torch.utils.data.Dataset:
-    """A held-out slice for monitoring during training (train-distribution)."""
+    """A cheap train-distribution slice for monitoring during training.
+
+    Prefer NTIRE when it is in the mix: the index is already cached from
+    training, so eval does not refill parquet shuffle buffers. Streaming
+    sources keep a tiny shuffle if we have to use them.
+    """
     import dataclasses
 
     d = cfg.data
     if d.source == "mixture" and d.sources:
-        # monitor on the streaming-friendly sources, capped (never mutate the
-        # training specs: build fresh ones via dataclasses.replace)
-        specs = [s for s in d.sources if s.type in ("comfor", "hf", "ntire")]
+        ntire = [s for s in d.sources if s.type == "ntire"]
+        specs = ntire or [s for s in d.sources if s.type in ("comfor", "hf", "ntire")]
         specs = specs or list(d.sources)
+        n = max(1, len(specs))
         capped = [
-            dataclasses.replace(s, max_samples=max(1, d.val_max_samples // len(specs)))
+            dataclasses.replace(
+                s,
+                max_samples=max(1, d.val_max_samples // n),
+                shuffle_buffer=min(int(s.shuffle_buffer or 0), 256),
+            )
             for s in specs
         ]
         return MixtureDataset(
@@ -685,7 +708,7 @@ def build_val_dataset(cfg) -> torch.utils.data.Dataset:
         return ComforStream(
             dataset=d.dataset,
             split=d.split,
-            shuffle_buffer=min(d.shuffle_buffer, 2048),
+            shuffle_buffer=min(d.shuffle_buffer, 256),
             max_samples=d.val_max_samples,
             seed=d.val_seed,
             local_dirs=d.local_dirs or None,
@@ -831,10 +854,10 @@ class BatchBuilder:
           real_on_fake  inverted patch labels: only the pasted region is real
           fake_on_fake  seams inside fully-fake content (all patches stay 1)
           real_on_real  label stays 0: blending alone is not a fake cue
-        Each composited sample receives a stack of 1..max_overlays pastes
-        with independent regions, scales and modes; every paste overwrites
-        the patch labels in its footprint (last layer wins), and the global
-        label follows what is actually visible.
+        Each composited sample gets n ~ Uniform{1,...,k} pastes
+        (k = max_overlays) with independent regions, scales and modes.
+        Every paste overwrites the patch labels in its footprint (last
+        layer wins), and the global label follows what is actually visible.
         """
         B = images.shape[0]
         comp = self.comp
@@ -849,11 +872,12 @@ class BatchBuilder:
             return self.rng.choice(cands) if cands else None
 
         def stack(i, base, first_src):
-            """`base` content + a stack of pastes of `first_src`'s class."""
+            """`base` content + n ~ Uniform{1,...,k} pastes of `first_src`'s class."""
             img = pool[base].clone()
             pl = torch.full((self.G, self.G), float(orig[base]))
             src = first_src
-            for _ in range(self.rng.randint(1, max(1, int(comp.max_overlays)))):
+            k = max(1, int(comp.max_overlays))
+            for _ in range(self.rng.randint(1, k)):
                 if src is None:
                     src = pick(float(orig[first_src]))
                     if src is None:

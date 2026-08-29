@@ -28,7 +28,7 @@ ema_decay: 0.999
 eval_every: 2000
 log_every: 10
 heatmap_every: 50
-heatmap_n: 8
+heatmap_n: 4
 out_dir: runs/seer_probe
 
 probe:
@@ -131,5 +131,7 @@ composite:
   real_on_fake: 0.35         # inverted labels — as important as FoR
   fake_on_fake: 0.15         # keep some seam-negative
   real_real_fraction: 0.20   # RoR ≈ 12% of reals; do not match `prob`
+  max_overlays: 3            # n ~ Uniform{1,...,k} pastes per composite
   patch_loss_weight: 1.0     # patch probe trains on composite heatmaps
+  balance_patch: true            # pos_weight = n_real_patches / n_fake_patches
   mode: mixed

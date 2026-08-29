@@ -11,8 +11,8 @@ Replicates the evaluation protocol of the Pangram Image technical blog:
   * False-positive-rate evals on real-only data (WikiArt etc. via folders)
 
 Metrics: macro (balanced) accuracy, mAP (average precision on the fake class),
-AUROC, FPR, FNR. Published reference numbers from the Pangram blog are printed
-next to ours for a direct comparison.
+AUROC, F1, precision, recall, FPR, FNR. Published reference numbers from the
+Pangram blog are printed next to ours for a direct comparison.
 """
 
 import json
@@ -52,7 +52,10 @@ NTIRE_EVAL = {
     "ntire_val": dict(split="val"),
     "ntire_val_hard": dict(split="val_hard"),
     "ntire_test": dict(split="test"),
+    "ntire_test_public": dict(split="test"),  # alias for the HF public test
 }
+
+_NTIRE_SAMPLE_CACHE: dict = {}
 
 
 def compute_metrics(probs: np.ndarray, labels: np.ndarray, threshold: float = 0.5) -> dict:
@@ -64,12 +67,18 @@ def compute_metrics(probs: np.ndarray, labels: np.ndarray, threshold: float = 0.
     fn = float((~pred[pos]).sum())
     tn = float((~pred[neg]).sum())
     fp = float((pred[neg]).sum())
+    prec = tp / max(1.0, tp + fp)
+    rec = tp / max(1.0, tp + fn)
+    f1 = (2.0 * prec * rec / (prec + rec)) if (prec + rec) > 0 else 0.0
     out = {
         "n": int(labels.size),
         "n_fake": int(pos.sum()),
         "n_real": int(neg.sum()),
         "accuracy": (tp + tn) / max(1, labels.size),
         "macro_accuracy": 0.5 * (tp / max(1, tp + fn) + tn / max(1, tn + fp)),
+        "precision": prec,
+        "recall": rec,
+        "f1": f1,
         "fpr": fp / max(1.0, fp + tn),
         "fnr": fn / max(1.0, fn + tp),
     }
@@ -82,6 +91,24 @@ def compute_metrics(probs: np.ndarray, labels: np.ndarray, threshold: float = 0.
         out["auroc"] = float("nan")
         out["mAP"] = float("nan")
     return out
+
+
+def _group_metrics(probs, labels, keys) -> dict:
+    buckets = defaultdict(lambda: ([], []))
+    for p, y, k in zip(probs, labels, keys):
+        buckets[str(k)][0].append(p)
+        buckets[str(k)][1].append(y)
+    return {
+        k: compute_metrics(np.array(ps), np.array(ys))
+        for k, (ps, ys) in sorted(buckets.items())
+    }
+
+
+def _distortion_key(sample: dict) -> str:
+    d = sample.get("distortions") or ()
+    if not d:
+        return "none"
+    return str(d[0])
 
 
 def _chunked(ds, batch_size: int, max_samples: Optional[int] = None):
@@ -100,6 +127,10 @@ def _chunked(ds, batch_size: int, max_samples: Optional[int] = None):
         yield chunk
 
 
+def known_eval_datasets() -> list:
+    return list(EVAL_SPECS) + list(NTIRE_EVAL) + ["folders"]
+
+
 def _build_eval_dataset(dataset, real_dirs=None, fake_dirs=None):
     if dataset == "folders":
         parts = []
@@ -111,11 +142,17 @@ def _build_eval_dataset(dataset, real_dirs=None, fake_dirs=None):
             raise ValueError("folders eval needs --real-dir and/or --fake-dir")
         return torch.utils.data.ConcatDataset(parts)
     if dataset in NTIRE_EVAL:
-        return NtireStream(split=NTIRE_EVAL[dataset]["split"], seed=0)
+        hit = _NTIRE_SAMPLE_CACHE.get(dataset)
+        if hit is not None:
+            return hit
+        stream = NtireStream(split=NTIRE_EVAL[dataset]["split"], seed=0, cycle=False)
+        samples = list(stream)
+        _NTIRE_SAMPLE_CACHE[dataset] = samples
+        print(f"[data] cached {len(samples)} {dataset} samples for later evals", flush=True)
+        return samples
     spec = EVAL_SPECS.get(dataset)
     if spec is None:
-        known = list(EVAL_SPECS) + list(NTIRE_EVAL) + ["folders"]
-        raise ValueError(f"Unknown eval dataset '{dataset}' (try {known})")
+        raise ValueError(f"Unknown eval dataset '{dataset}' (try {known_eval_datasets()})")
     return ComforStream(dataset=spec["dataset"], split=spec["split"],
                          shuffle_buffer=1024, max_samples=None, seed=0)
 
@@ -129,7 +166,7 @@ def _single_pass(model, cfg_dict, perturbation: Optional[str], augmented: bool,
     pert_name = perturbation or ("pangram" if augmented else "clean")
     perturb_fn = (lambda im: apply_perturbation(im, pert_name)) if pert_name != "clean" else None
 
-    probs, labels, archs, gens = [], [], [], []
+    probs, labels, archs, distorted, dist_keys = [], [], [], [], []
     for chunk in tqdm(_chunked(ds, batch_size, max_samples),
                       desc=f"eval[{pert_name}]", unit="img", disable=None):
         imgs = [load_sample_image(s) for s in chunk]
@@ -145,7 +182,8 @@ def _single_pass(model, cfg_dict, perturbation: Optional[str], augmented: bool,
         probs.extend(p.cpu().tolist())
         labels.extend(int(s["label"]) for s in chunk)
         archs.extend(s.get("architecture", "") for s in chunk)
-        gens.extend(s.get("generator", "") for s in chunk)
+        distorted.extend("distorted" if s.get("is_distorted") else "clean" for s in chunk)
+        dist_keys.extend(_distortion_key(s) for s in chunk)
 
     probs = np.array(probs)
     labels = np.array(labels)
@@ -153,16 +191,39 @@ def _single_pass(model, cfg_dict, perturbation: Optional[str], augmented: bool,
     metrics["dataset"] = dataset
     metrics["perturbation"] = pert_name
     metrics["hflip_tta"] = hflip_tta
-
-    by_arch = defaultdict(lambda: ([], []))
-    for p, y, a in zip(probs, labels, archs):
-        by_arch[a][0].append(p)
-        by_arch[a][1].append(y)
-    metrics["per_architecture"] = {}
-    for a in sorted(by_arch):
-        ps, ys = np.array(by_arch[a][0]), np.array(by_arch[a][1])
-        metrics["per_architecture"][a] = compute_metrics(ps, ys)
+    metrics["per_architecture"] = _group_metrics(probs, labels, archs)
+    if any(s != "clean" for s in distorted):
+        metrics["per_distorted"] = _group_metrics(probs, labels, distorted)
+        metrics["per_distortion"] = {
+            k: v for k, v in _group_metrics(probs, labels, dist_keys).items()
+            if v["n"] >= 20
+        }
     return metrics
+
+
+@torch.no_grad()
+def eval_named_dataset(
+    model,
+    dataset: str,
+    *,
+    res: int,
+    device,
+    batch_size: int = 16,
+    max_samples: Optional[int] = None,
+) -> dict:
+    """Score one named eval set (used from the training loop and CLI)."""
+    return _single_pass(
+        model=model,
+        cfg_dict={},
+        perturbation=None,
+        augmented=False,
+        dataset=dataset,
+        batch_size=batch_size,
+        max_samples=max_samples,
+        hflip_tta=False,
+        res=res,
+        device=device,
+    )
 
 
 @torch.no_grad()
@@ -195,7 +256,8 @@ def evaluate_checkpoint(
         for name in PERTURBATIONS:
             m = _single_pass(perturbation=name, augmented=False, **pass_kwargs())
             results[name] = {k: m[k] for k in
-                             ("macro_accuracy", "mAP", "auroc", "accuracy", "fpr", "fnr", "n")}
+                             ("macro_accuracy", "mAP", "auroc", "f1", "precision",
+                              "recall", "accuracy", "fpr", "fnr", "n")}
         metrics = dict(results["clean"])
         metrics["perturbation_sweep"] = results
         _print_robustness_table(results)
@@ -224,11 +286,12 @@ def _print_robustness_table(results: dict):
     print(" Robustness sweep (benchmark perturbation protocol, both classes)")
     print("=" * 78)
     print(f"  {'perturbation':<12s} {'macro acc':>10s} {'mAP':>8s} {'AUROC':>8s} "
-          f"{'FPR':>7s} {'FNR':>7s}  n")
+          f"{'F1':>8s} {'FPR':>7s} {'FNR':>7s}  n")
     for name, m in results.items():
         desc = PERTURBATIONS.get(name, ("", ""))[1]
         print(f"  {name:<12s} {_fmt(m['macro_accuracy']):>10s} {_fmt(m['mAP']):>8s} "
-              f"{_fmt(m['auroc']):>8s} {_fmt(m['fpr']):>7s} {_fmt(m['fnr']):>7s}  {m['n']}"
+              f"{_fmt(m['auroc']):>8s} {_fmt(m['f1']):>8s} {_fmt(m['fpr']):>7s} "
+              f"{_fmt(m['fnr']):>7s}  {m['n']}"
               f"  ({desc})")
     print("=" * 78 + "\n")
 
@@ -243,16 +306,36 @@ def _print_report(m: dict, dataset: str):
     print(f"  macro accuracy : {_fmt(m['macro_accuracy'])}")
     print(f"  mAP            : {_fmt(m['mAP'])}")
     print(f"  AUROC          : {_fmt(m['auroc'])}")
+    print(f"  F1             : {_fmt(m['f1'])}")
+    print(f"  precision / rec: {_fmt(m.get('precision'))} / {_fmt(m.get('recall'))}")
     print(f"  accuracy       : {_fmt(m['accuracy'])}")
     print(f"  FPR / FNR      : {_fmt(m['fpr'])} / {_fmt(m['fnr'])}  (n={m['n']})")
     per_arch = m.get("per_architecture") or {}
-    if per_arch:
+    if per_arch and any(a for a in per_arch):
         print("  per architecture:")
         for a, mm in per_arch.items():
             print(
                 f"    {a:<12s} macro_acc={_fmt(mm['macro_accuracy']):>8s} "
-                f"mAP={_fmt(mm['mAP']):>8s} FPR={_fmt(mm['fpr']):>8s} "
+                f"mAP={_fmt(mm['mAP']):>8s} F1={_fmt(mm['f1']):>8s} "
+                f"AUROC={_fmt(mm['auroc']):>8s} FPR={_fmt(mm['fpr']):>8s} "
                 f"(n={mm['n']})"
+            )
+    per_d = m.get("per_distorted") or {}
+    if per_d:
+        print("  clean vs distorted:")
+        for a, mm in per_d.items():
+            print(
+                f"    {a:<12s} macro_acc={_fmt(mm['macro_accuracy']):>8s} "
+                f"F1={_fmt(mm['f1']):>8s} AUROC={_fmt(mm['auroc']):>8s} "
+                f"(n={mm['n']})"
+            )
+    per_dist = m.get("per_distortion") or {}
+    if per_dist:
+        print("  per first distortion (n>=20):")
+        for a, mm in per_dist.items():
+            print(
+                f"    {a:<16s} macro_acc={_fmt(mm['macro_accuracy']):>8s} "
+                f"F1={_fmt(mm['f1']):>8s} (n={mm['n']})"
             )
     if m.get("perturbation_sweep"):
         _print_robustness_table(m["perturbation_sweep"])
@@ -270,7 +353,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(description="Evaluate an Seer checkpoint")
     p.add_argument("--checkpoint", required=True)
     p.add_argument("--dataset", default="comfor_eval",
-                   help=f"one of {list(EVAL_SPECS) + list(NTIRE_EVAL)} or 'folders'")
+                   help=f"one of {known_eval_datasets()}")
     p.add_argument("--real-dir", nargs="*", default=None)
     p.add_argument("--fake-dir", nargs="*", default=None)
     p.add_argument("--augmented", action="store_true",

@@ -27,6 +27,7 @@ from .data import (
     count_parquet_rows,
     parquet_files,
 )
+from .eval import compute_metrics, eval_named_dataset
 from .heatmap import save_batch_heatmaps
 from .model import SeerDetector, EMA, build_param_groups, detection_loss, save_checkpoint
 from .optim import build_optimizer, group_param_counts
@@ -111,19 +112,43 @@ def _steps_per_epoch(cfg: TrainConfig) -> Optional[int]:
     return None
 
 
+_VAL_SAMPLE_CACHE: dict = {}
+
+
+def _val_cache_key(cfg: TrainConfig) -> tuple:
+    srcs = tuple(
+        (s.name, s.type, s.split, int(getattr(s, "shard", 0) or 0))
+        for s in (cfg.data.sources or [])
+    )
+    return (cfg.data.source, srcs, cfg.data.val_max_samples, cfg.data.val_seed, cfg.res)
+
+
+def _cached_val_samples(cfg: TrainConfig) -> list:
+    """Collect the val slice once; later evals reuse the same lazy samples."""
+    key = _val_cache_key(cfg)
+    hit = _VAL_SAMPLE_CACHE.get(key)
+    if hit is not None:
+        return hit
+    ds = build_val_dataset(cfg)
+    out = []
+    for sample in ds:
+        out.append(sample)
+        if len(out) >= max(1, int(cfg.data.val_max_samples)):
+            break
+    _VAL_SAMPLE_CACHE[key] = out
+    _log(f"[data] cached {len(out)} val samples for later evals")
+    return out
+
+
 @torch.no_grad()
 def quick_val(model: SeerDetector, cfg: TrainConfig, device) -> dict:
-    """Balanced accuracy on a held-out streamed slice (train-distribution).
-    Bounded by max_batches as a safety net - some val datasets are infinite
-    iterators (folder cycles)."""
-    val_ds = build_val_dataset(cfg)
+    """Metrics on a cached train-distribution slice (NTIRE when available)."""
+    samples = _cached_val_samples(cfg)
     builder = BatchBuilder(cfg, train=False, patch_grid=model.patch_grid(cfg.res), seed=1234)
-    loader = DataLoader(val_ds, batch_size=cfg.batch_size, collate_fn=builder, num_workers=0)
-    max_batches = max(2, math.ceil(cfg.data.val_max_samples / max(1, cfg.batch_size))) + 4
+    bs = max(1, int(cfg.batch_size))
     probs, labels = [], []
-    for bi, batch in enumerate(loader):
-        if bi >= max_batches:
-            break
+    for i in range(0, len(samples), bs):
+        batch = builder(samples[i: i + bs])
         images = batch["images"].to(device)
         with torch.autocast(device.type, dtype=torch.bfloat16, enabled=(device.type == "cuda" and cfg.bf16)):
             out = model(images)
@@ -131,11 +156,59 @@ def quick_val(model: SeerDetector, cfg: TrainConfig, device) -> dict:
         labels.extend(batch["labels"].tolist())
     if not probs or len(set(labels)) < 2:
         return {"val_balanced_acc": float("nan")}
-    probs, labels = np.array(probs), np.array(labels)
-    pred = probs >= 0.5
-    tpr = float(((pred == 1) & (labels == 1)).sum() / max(1, (labels == 1).sum()))
-    tnr = float(((pred == 0) & (labels == 0)).sum() / max(1, (labels == 0).sum()))
-    return {"val_balanced_acc": 0.5 * (tpr + tnr), "val_tpr": tpr, "val_tnr": tnr}
+    m = compute_metrics(np.array(probs), np.array(labels))
+    return {
+        "val_balanced_acc": m["macro_accuracy"],
+        "val_tpr": m["recall"],
+        "val_tnr": 1.0 - m["fpr"],
+        "val_f1": m["f1"],
+        "val_auroc": m["auroc"],
+        "val_mAP": m["mAP"],
+        "val_precision": m["precision"],
+        "val_recall": m["recall"],
+    }
+
+
+def _run_held_out_evals(model: SeerDetector, cfg: TrainConfig, device) -> dict:
+    """Official labelled sets (NTIRE public test, …). Does not choose best.pt."""
+    extra = {}
+    for name in getattr(cfg, "eval_datasets", None) or []:
+        try:
+            held = eval_named_dataset(
+                model, name,
+                res=cfg.res,
+                device=device,
+                batch_size=min(16, max(1, int(cfg.batch_size))),
+            )
+        except FileNotFoundError as exc:
+            _log(f"[eval.{name}] skipped: {exc}")
+            continue
+        except Exception as exc:
+            _log(f"[eval.{name}] failed: {exc}")
+            continue
+        extra[name] = {
+            k: held[k] for k in
+            ("n", "macro_accuracy", "f1", "auroc", "mAP", "fpr", "fnr")
+            if k in held
+        }
+        if held.get("per_distorted"):
+            extra[name]["per_distorted"] = {
+                k: v["macro_accuracy"] for k, v in held["per_distorted"].items()
+            }
+        d = held.get("per_distorted") or {}
+        split = ""
+        if "clean" in d and "distorted" in d:
+            split = (
+                f" clean={d['clean']['macro_accuracy']:.4f}"
+                f" distorted={d['distorted']['macro_accuracy']:.4f}"
+            )
+        _log(
+            f"[eval.{name}] n={held.get('n')} "
+            f"macro_acc={held.get('macro_accuracy'):.4f} "
+            f"f1={held.get('f1'):.4f} auroc={held.get('auroc'):.4f} "
+            f"mAP={held.get('mAP'):.4f}{split}"
+        )
+    return extra
 
 
 def _log(msg: str):
@@ -155,10 +228,20 @@ def run(cfg: TrainConfig):
     set_seed(cfg.seed)
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cudnn.benchmark = True
+    try:
+        torch.set_float32_matmul_precision("high")
+    except Exception:
+        pass
 
     # ------------------------------------------------------------- model
     probe_layers = cfg.probe.layers if cfg.probe.enabled else None
-    model = SeerDetector(cfg.backbone, pretrained=cfg.pretrained, probe_layers=probe_layers)
+    model = SeerDetector(
+        cfg.backbone,
+        pretrained=cfg.pretrained,
+        probe_layers=probe_layers,
+        attn_implementation=getattr(cfg, "attn_implementation", "auto"),
+    )
     if cfg.probe.enabled:
         # a linear probe never updates the backbone; no activation grads
         # through it either, so gradient checkpointing is pointless too
@@ -181,7 +264,8 @@ def run(cfg: TrainConfig):
     _log(f"[seer] device={device}" + (
         f" {torch.cuda.get_device_name(0)}" if device.type == "cuda" else ""
     ))
-    _log(f"[seer] backbone={cfg.backbone} res={cfg.res}")
+    attn = getattr(model.backbone.config, "_attn_implementation", model.attn_implementation)
+    _log(f"[seer] backbone={cfg.backbone} res={cfg.res} attn={attn}")
     _log(f"[seer] model has {model.budget_report()}")
     assert n_params < 2_000_000_000, "detector exceeds the 2B parameter budget"
 
@@ -280,15 +364,19 @@ def run(cfg: TrainConfig):
     _log(f"[seer] training for {total_steps} steps "
           f"(effective batch {cfg.batch_size * cfg.grad_accum}, "
           f"log_every={cfg.log_every}) -> {cfg.out_dir}")
+    if getattr(cfg, "eval_datasets", None):
+        _log(f"[eval] held-out every {cfg.eval_every} steps: {list(cfg.eval_datasets)}")
 
     for step in range(start_step, total_steps):
         optimizer.zero_grad(set_to_none=True)
 
         accum_loss = 0.0
-        accum_stats = {"loss_global": 0.0, "loss_patch": 0.0}
-        for _ in range(cfg.grad_accum):
+        accum_acc = 0.0
+        accum_stats = {"loss_global": 0.0, "loss_patch": 0.0, "patch_pos_weight": 0.0}
+        n_accum = max(1, int(cfg.grad_accum))
+        for micro in range(n_accum):
             batch = next(data_iter)
-            if step == start_step and _ == 0:
+            if step == start_step and micro == 0:
                 n_fake = int((batch["labels"] > 0.5).sum().item())
                 n_real = int(batch["labels"].numel()) - n_fake
                 _log(
@@ -305,17 +393,20 @@ def run(cfg: TrainConfig):
                 loss, stats = detection_loss(
                     out["logits"], out["patch_logits"], labels, patch_labels,
                     patch_weight=cfg.composite.patch_loss_weight,
+                    balance_patch=cfg.composite.balance_patch,
                 )
-            (loss / cfg.grad_accum).backward()
-            accum_loss += loss.item() / cfg.grad_accum
-            accum_stats["loss_global"] += stats["loss_global"] / cfg.grad_accum
-            accum_stats["loss_patch"] += stats["loss_patch"] / cfg.grad_accum
+            (loss / n_accum).backward()
+            accum_loss += loss.item() / n_accum
+            accum_stats["loss_global"] += stats["loss_global"] / n_accum
+            accum_stats["loss_patch"] += stats["loss_patch"] / n_accum
+            accum_stats["patch_pos_weight"] += stats.get("patch_pos_weight", 1.0) / n_accum
 
             with torch.no_grad():
-                acc = ((out["logits"] >= 0) == labels.bool()).float().mean().item()
-            running["loss"] += accum_loss
-            running["acc"] += acc
-            running["n"] += 1
+                accum_acc += ((out["logits"] >= 0) == labels.bool()).float().mean().item() / n_accum
+
+        running["loss"] += accum_loss
+        running["acc"] += accum_acc
+        running["n"] += 1
 
         torch.nn.utils.clip_grad_norm_(trainable, cfg.clip_grad)
         optimizer.step()
@@ -338,7 +429,8 @@ def run(cfg: TrainConfig):
                 f"[step {n_done}/{total_steps}] "
                 f"loss={running['loss'] / n:.4f} "
                 f"acc={running['acc'] / n:.4f} "
-                f"(g={accum_stats['loss_global']:.3f} p={accum_stats['loss_patch']:.3f}) "
+                f"(g={accum_stats['loss_global']:.3f} p={accum_stats['loss_patch']:.3f} "
+                f"pw={accum_stats['patch_pos_weight']:.1f}) "
                 f"lr={scheduler.get_last_lr()[0]:.2e} "
                 f"{sps:.2f} it/s eta={eta_h}h{eta_m:02d}m "
                 f"batch real={n_real} fake={n_fake}"
@@ -379,16 +471,30 @@ def run(cfg: TrainConfig):
 
         # ------------------------------------------------------- evaluation
         if (step + 1) % cfg.eval_every == 0 or (step + 1) == total_steps:
-            eval_model = model
-            if ema_used:
-                backup = {k: v.detach().clone() for k, v in model.state_dict().items()}
-                model.load_state_dict(ema.shadow)
-                eval_model = model
-            metrics = quick_val(model, cfg, device)
-            if ema_used:
-                model.load_state_dict(backup)
-            metrics.update({"step": step + 1})
-            _log(f"[eval] {metrics}")
+            was_training = model.training
+            backup = None
+            extra = {}
+            try:
+                model.eval()
+                if ema_used:
+                    # CPU copy — a GPU clone plus val forward OOMs an 80GB card
+                    # that is already near capacity from training activations.
+                    backup = {k: v.detach().cpu() for k, v in model.state_dict().items()}
+                    model.load_state_dict(ema.shadow)
+                metrics = quick_val(model, cfg, device)
+                metrics.update({"step": step + 1})
+                _log(f"[eval] {metrics}")
+                extra = _run_held_out_evals(model, cfg, device)
+                if extra:
+                    metrics["held_out"] = extra
+            finally:
+                if backup is not None:
+                    model.load_state_dict(backup)
+                    del backup
+                if was_training:
+                    model.train()
+                if device.type == "cuda":
+                    torch.cuda.empty_cache()
 
             if metrics.get("val_balanced_acc", -1) > best_metric or math.isnan(
                 metrics.get("val_balanced_acc", float("nan"))

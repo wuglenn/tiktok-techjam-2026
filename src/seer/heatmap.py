@@ -107,6 +107,17 @@ def _pick_indices(labels: torch.Tensor, n: int) -> list:
     return idx[:n]
 
 
+def _add_caption(ax, text: str) -> None:
+    """Readable label that sits on the image so it cannot collide with the next row."""
+    ax.text(
+        0.03, 0.04, text,
+        transform=ax.transAxes,
+        ha="left", va="bottom",
+        fontsize=8, color="white",
+        bbox={"boxstyle": "round,pad=0.25", "fc": "black", "alpha": 0.55, "ec": "none"},
+    )
+
+
 def save_batch_heatmaps(
     out_path: str,
     images: torch.Tensor,
@@ -118,9 +129,9 @@ def save_batch_heatmaps(
 ) -> str:
     """Grid of training/eval images with predicted AI heatmaps overlaid.
 
-    `images` are ImageNet-normalized (B, 3, H, W). Writes one PNG and
-    returns its path. Also writes per-image `{stem}_{i:02d}_{real|fake}.png`
-    next to the grid.
+    `images` are ImageNet-normalized (B, 3, H, W). Writes one joint PNG.
+    Figure size is 2 square columns so ``imshow`` aspect='equal' cannot
+    open a white gulf between input and heatmap.
     """
     import matplotlib
 
@@ -147,41 +158,43 @@ def save_batch_heatmaps(
         else [float("nan")] * n
     )
 
-    ncols = 2
-    nrows = n
-    fig, axes = plt.subplots(nrows, ncols, figsize=(9, 2.2 * n))
-    if n == 1:
-        axes = [axes]
+    cell = 2.2
+    gap_x = 0.05
+    gap_y = 0.05
+    hdr = 0.50 if title else 0.28
+    fig_w = 2 * cell + gap_x
+    fig_h = hdr + n * cell + max(0, n - 1) * gap_y
+    fig = plt.figure(figsize=(fig_w, fig_h), facecolor="white")
+
+    def panel(row: int, col: int):
+        left = col * (cell + gap_x) / fig_w
+        bottom = (fig_h - hdr - (row + 1) * cell - row * gap_y) / fig_h
+        ax = fig.add_axes([left, bottom, cell / fig_w, cell / fig_h])
+        ax.set_axis_off()
+        return ax
+
+    first_top = (fig_h - hdr) / fig_h
+    if title:
+        fig.text(0.5, 1.0 - 0.06 / fig_h, title, ha="center", va="top", fontsize=10)
+    for col, name in enumerate(("input", "AI heatmap")):
+        cx = (col * (cell + gap_x) + 0.5 * cell) / fig_w
+        fig.text(cx, first_top + 0.04 / fig_h, name,
+                 ha="center", va="bottom", fontsize=8, color="#444444")
+
     for i in range(n):
-        rgb = disp[i].permute(1, 2, 0).numpy()
+        rgb = disp[i].permute(1, 2, 0).clamp(0.0, 1.0).numpy()
         tag = "fake" if y[i] >= 0.5 else "real"
         p = probs[i]
-        p_s = f"P(AI)={p:.3f}" if p == p else ""
-        axes[i][0].imshow(rgb)
-        axes[i][0].set_title(f"{tag}  {p_s}".strip())
-        axes[i][0].axis("off")
-        axes[i][1].imshow(rgb)
-        axes[i][1].imshow(heat[i], cmap="turbo", alpha=0.55, vmin=0.0, vmax=1.0)
-        axes[i][1].set_title("AI heatmap")
-        axes[i][1].axis("off")
-    if title:
-        fig.suptitle(title)
-    plt.tight_layout()
+        cap = f"{tag}  P(AI)={p:.3f}" if p == p else tag
+        ax0 = panel(i, 0)
+        ax0.imshow(rgb, aspect="equal")
+        _add_caption(ax0, cap)
+        ax1 = panel(i, 1)
+        ax1.imshow(rgb, aspect="equal")
+        ax1.imshow(heat[i], cmap="turbo", alpha=0.55, vmin=0.0, vmax=1.0, aspect="equal")
+
     out_path = str(out_path)
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=120, bbox_inches="tight")
+    fig.savefig(out_path, dpi=130, facecolor="white", bbox_inches="tight", pad_inches=0.12)
     plt.close(fig)
-
-    stem = Path(out_path)
-    for i in range(n):
-        rgb = (disp[i].permute(1, 2, 0).numpy() * 255).clip(0, 255).astype("uint8")
-        pil = Image.fromarray(rgb)
-        tag = "fake" if y[i] >= 0.5 else "real"
-        save_heatmap(
-            str(stem.with_name(f"{stem.stem}_{i:02d}_{tag}.png")),
-            pil,
-            heat[i],
-            float(probs[i]) if probs[i] == probs[i] else 0.0,
-            H,
-        )
     return out_path

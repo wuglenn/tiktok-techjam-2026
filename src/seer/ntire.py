@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import csv
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Sequence
@@ -145,21 +146,53 @@ def load_train(shard: int = -1) -> list[Sample]:
     return samples
 
 
+_SPLIT_CACHE: dict = {}
+_SPLIT_LOCK = threading.Lock()
+
+
+def _split_cache_key(split: str, shard: int, hard: bool) -> tuple:
+    key = split.replace("-", "_")
+    if key in ("val", "validation", "val_hard", "hard"):
+        root = _val_dir()
+    elif key == "test":
+        root = _test_dir()
+    else:
+        root = _train_dir()
+    return (key, int(shard), bool(hard), str(root))
+
+
 def load_split(split: str = "train", shard: int = 0, hard: bool = False) -> list[Sample]:
     """Dispatch to the matching NTIRE split loader.
 
     ``shard < 0`` (or ``split='train_all'``) concatenates every train shard.
+    Results are cached in-process (thread-safe) so train readers and
+    periodic val do not re-index hundreds of thousands of JPEGs.
     """
-    key = split.replace("-", "_")
-    if key in ("val", "validation"):
-        return load_val(hard=hard)
-    if key in ("val_hard", "hard"):
-        return load_val(hard=True)
-    if key == "test":
-        return load_test()
-    if key in ("train_all", "all"):
-        return load_train(-1)
-    return load_train(shard)
+    cache_key = _split_cache_key(split, shard, hard)
+    hit = _SPLIT_CACHE.get(cache_key)
+    if hit is not None:
+        return hit
+    with _SPLIT_LOCK:
+        hit = _SPLIT_CACHE.get(cache_key)
+        if hit is not None:
+            return hit
+        key = split.replace("-", "_")
+        if key in ("val", "validation"):
+            samples = load_val(hard=hard)
+        elif key in ("val_hard", "hard"):
+            samples = load_val(hard=True)
+        elif key == "test":
+            samples = load_test()
+        elif key in ("train_all", "all"):
+            samples = load_train(-1)
+        else:
+            samples = load_train(shard)
+        _SPLIT_CACHE[cache_key] = samples
+        return samples
+
+
+def split_is_cached(split: str = "train", shard: int = 0, hard: bool = False) -> bool:
+    return _split_cache_key(split, shard, hard) in _SPLIT_CACHE
 
 
 def stratified_subset(

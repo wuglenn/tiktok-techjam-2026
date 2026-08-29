@@ -109,6 +109,7 @@ def test_hero_config_keeps_only_frontier_fakes():
     assert normalize_label(0, sid.label_map) == 0
     ntire = by_name["ntire"]
     assert ntire.type == "ntire" and ntire.split == "train" and ntire.shard == -1
+    assert cfg.eval_datasets == ["ntire_test"]
     gs3 = by_name["gs-images-v3"]
     assert gs3.type == "folders" and gs3.fake_dirs
     gs4 = by_name["gs-images-v4"]

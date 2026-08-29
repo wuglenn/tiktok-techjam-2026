@@ -32,20 +32,24 @@
 backbone: facebook/dinov3-vitl16-pretrain-lvd1689m  # gated: accept license + hf auth login
 pretrained: true
 res: 512
-batch_size: 32
-grad_accum: 1
+batch_size: 54
+grad_accum: 2               # effective batch 108; loss is averaged over the microbatches
 max_steps: 60000
-lr: 1.0e-5
+lr: 5.0e-5              # peak backbone LR (top layers after warmup; LLRD scales earlier)
 head_lr: 1.0e-4
 llrd: 0.8
 optimizer: adamw
+attn_implementation: auto   # FA4→FA3→FA2 if installed, else PyTorch SDPA
 weight_decay: 0.05
 warmup_steps: 1000
 bf16: true
 grad_checkpointing: false  # not needed on big GPUs
 ema_decay: 0.999
 eval_every: 2000
+eval_datasets: [ntire_test]   # HF deepfakesMSU/NTIRE-RobustAIGenDetection-test-public
 log_every: 50
+heatmap_every: 50
+heatmap_n: 4
 out_dir: runs/seer_vitl
 
 data:
@@ -139,5 +143,7 @@ composite:
   real_on_fake: 0.35         # inverted labels — as important as FoR
   fake_on_fake: 0.15         # keep some seam-negative
   real_real_fraction: 0.20   # RoR ≈ 12% of reals; do not match `prob`
+  max_overlays: 3            # n ~ Uniform{1,...,k} pastes per composite
   patch_loss_weight: 1.0
+  balance_patch: true            # pos_weight = n_real_patches / n_fake_patches
   mode: mixed                # blend (seamless) + paste (hard overlay)

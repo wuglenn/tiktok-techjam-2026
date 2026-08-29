@@ -50,15 +50,62 @@ def _tiny_backbone() -> nn.Module:
     return Dinov2Model(cfg)
 
 
-def load_backbone(name: str, pretrained: bool = True) -> nn.Module:
+ATTN_PREFERENCE = (
+    "flash_attention_4",
+    "flash_attention_3",
+    "flash_attention_2",
+    "sdpa",
+)
+
+
+def resolve_attn_implementation(requested: str = "auto") -> str:
+    """Pick the fastest installed FlashAttention, else PyTorch SDPA."""
+    if requested and requested != "auto":
+        return requested
+    try:
+        from transformers.utils import (
+            is_flash_attn_2_available,
+            is_flash_attn_3_available,
+            is_flash_attn_4_available,
+        )
+    except Exception:
+        return "sdpa"
+    checks = {
+        "flash_attention_4": is_flash_attn_4_available,
+        "flash_attention_3": is_flash_attn_3_available,
+        "flash_attention_2": is_flash_attn_2_available,
+    }
+    for name in ATTN_PREFERENCE:
+        if name == "sdpa":
+            return "sdpa"
+        try:
+            if checks[name]():
+                return name
+        except Exception:
+            continue
+    return "sdpa"
+
+
+def load_backbone(
+    name: str,
+    pretrained: bool = True,
+    attn_implementation: str = "auto",
+) -> nn.Module:
     if name == "tiny":
         return _tiny_backbone()
     from transformers import AutoConfig, AutoModel
 
+    attn = resolve_attn_implementation(attn_implementation)
+    kwargs = {"attn_implementation": attn} if attn else {}
     if pretrained:
         try:
-            return AutoModel.from_pretrained(name)
-        except Exception as e:  # gated repo, network error, ...
+            return AutoModel.from_pretrained(name, **kwargs)
+        except Exception as e:  # gated repo, network error, missing FA kernel, ...
+            if attn != "sdpa":
+                try:
+                    return AutoModel.from_pretrained(name, attn_implementation="sdpa")
+                except Exception:
+                    pass
             raise RuntimeError(
                 f"Could not load backbone '{name}': {e}\n"
                 "If this is a gated model (DINOv3 is), accept its license on the "
@@ -66,7 +113,7 @@ def load_backbone(name: str, pretrained: bool = True) -> nn.Module:
                 "`backbone` at an open checkpoint such as 'facebook/dinov2-large'."
             ) from e
     cfg = AutoConfig.from_pretrained(name)
-    return AutoModel.from_config(cfg)
+    return AutoModel.from_config(cfg, **kwargs)
 
 
 class SeerDetector(nn.Module):
@@ -76,6 +123,7 @@ class SeerDetector(nn.Module):
         pretrained: bool = True,
         head_dropout: float = 0.1,
         probe_layers: Optional[List[int]] = None,
+        attn_implementation: str = "auto",
     ):
         """`probe_layers` (from ProbeConfig.layers) switches to frozen-backbone
         linear-probe mode: a page head over concatenated [CLS ; mean(patches)]
@@ -83,7 +131,8 @@ class SeerDetector(nn.Module):
         None (default) builds the continuation-training model."""
         super().__init__()
         self.backbone_name = backbone
-        self.backbone = load_backbone(backbone, pretrained)
+        self.attn_implementation = resolve_attn_implementation(attn_implementation)
+        self.backbone = load_backbone(backbone, pretrained, self.attn_implementation)
         cfg = self.backbone.config
         self.hidden_size = int(cfg.hidden_size)
         self.patch_size = int(getattr(cfg, "patch_size", 16) or 16)
@@ -235,21 +284,41 @@ class SeerDetector(nn.Module):
         return {"logits": logits, "patch_logits": patch_logits}
 
 
+def _patch_pos_weight(patch_labels: torch.Tensor, cap: float = 50.0) -> Optional[torch.Tensor]:
+    """n_real / n_fake so sparse FoR fake crops are not drowned by real patches."""
+    pos = patch_labels.detach().float().sum()
+    n = patch_labels.numel()
+    neg = n - pos
+    if float(pos) < 1.0 or float(neg) < 1.0:
+        return None
+    return (neg / pos).clamp(1.0 / cap, cap)
+
+
 def detection_loss(
     logits: torch.Tensor,
     patch_logits: Optional[torch.Tensor],
     labels: torch.Tensor,
     patch_labels: torch.Tensor,
     patch_weight: float = 0.5,
+    balance_patch: bool = True,
 ):
     """Image-level BCE + per-patch BCE (the composite-training objective).
 
-    `patch_logits=None` drops the patch term."""
+    `patch_logits=None` drops the patch term. `balance_patch` sets BCE
+    `pos_weight = n_real_patches / n_fake_patches` so FoR-style sparse
+    fake regions count as much as the real majority.
+    """
     loss_g = F.binary_cross_entropy_with_logits(logits, labels)
+    stats = {"loss_global": loss_g.item(), "loss_patch": 0.0, "patch_pos_weight": 1.0}
     if patch_logits is None:
-        return loss_g, {"loss_global": loss_g.item(), "loss_patch": 0.0}
-    loss_p = F.binary_cross_entropy_with_logits(patch_logits, patch_labels)
-    return loss_g + patch_weight * loss_p, {"loss_global": loss_g.item(), "loss_patch": loss_p.item()}
+        return loss_g, stats
+    pos_w = _patch_pos_weight(patch_labels) if balance_patch else None
+    loss_p = F.binary_cross_entropy_with_logits(
+        patch_logits, patch_labels, pos_weight=pos_w
+    )
+    stats["loss_patch"] = loss_p.item()
+    stats["patch_pos_weight"] = float(pos_w) if pos_w is not None else 1.0
+    return loss_g + patch_weight * loss_p, stats
 
 
 # ---------------------------------------------------------------------- EMA
@@ -355,7 +424,12 @@ def load_checkpoint(path, device="cpu", prefer_ema: bool = True) -> tuple:
     backbone = cfg_dict.get("backbone") or ckpt.get("backbone_name") or DEFAULT_BACKBONE
     probe_cfg = cfg_dict.get("probe") or {}
     probe_layers = list(probe_cfg.get("layers") or []) if probe_cfg.get("enabled") else None
-    model = SeerDetector(backbone, pretrained=False, probe_layers=probe_layers)
+    model = SeerDetector(
+        backbone,
+        pretrained=False,
+        probe_layers=probe_layers,
+        attn_implementation=cfg_dict.get("attn_implementation", "auto"),
+    )
     sd = ckpt.get("ema") if (prefer_ema and ckpt.get("ema")) else None
     if sd is None:
         sd = ckpt["model"]
