@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aigcdet"
+version = "0.1.0"
+description = "Robust detection of AI-generated images under real-world transformations"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.4",
+    "torchvision",
+    "timm>=1.0.20",
+    "numpy",
+    "pillow",
+    "scikit-learn",
+    "pandas",
+    "matplotlib",
+    "tqdm",
+    "huggingface_hub",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["aigcdet*"]
+
+[tool.pytest.ini_options]
+testpaths = ["src/tests"]
