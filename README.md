@@ -5,8 +5,8 @@
 Seer is a DINOv3 ViT-L backbone (~300M params) fully fine-tuned for AI-image
 detection, with a dual head for image-level verdicts **and** patch-level
 heatmaps. Total: **~302M parameters — 15% of the budget**. It is trained on a
-public-data mixture that mirrors every pillar of Pangram's data strategy:
-generator diversity, real-content-grounded synthetic mirroring, wild-simulation
+public-data mixture that follows Pangram's data strategy:
+generator diversity, public frontier fakes, wild-simulation
 augmentation, and composite training.
 
 ```
@@ -32,11 +32,11 @@ Pangram Image is the current commercial SOTA. Their recipe, from the
 | Pillar | Pangram Image | Seer |
 |---|---|---|
 | Backbone | DINOv3, **full continuation fine-tuning** ("AI detection is not an ordinary downstream task") | same — DINOv3 ViT-L, full FT with layer-wise LR decay |
-| AI data | synthetic mirroring (VLM caption → regenerate) + scraped real-world AI images | mirroring via local generators (SDXL/FLUX.1-schnell/SD1.5/img2img edits) seeded by real-content captions + 4,803 open generators (Community Forensics) + 9 modern families (Synthbuster) |
+| AI data | synthetic mirroring (VLM caption → regenerate) + scraped real-world AI images | 4,803 open generators (Community Forensics) + FLUX.1-dev + Midjourney/DALL-E/SD/Nano Banana Pro + SID synthetic/tampered + DDA COCO reconstructions + 9 modern families (Synthbuster) |
 | Real data | diverse web imagery; careful FPR control (WikiArt 0/2000, ReLAION 0.16% FPR) | paired reals from the mixture; WikiArt/folders FPR harness |
 | Augmentation | strong "in the wild" simulation (crop, edit, compression) | symmetric wild-simulation at benchmark levels: JPEG q∈{90,70,50,30}, blur σ∈{0.5,1,2}, resize 0.5×/0.25×, noise σ∈{0.02,0.05,0.10}, jitter ±20%, crop 80%, WebP, grayscale |
 | Mixed images | composite training → heatmaps | same: cropped overlays in all four real/fake pairings, stacked multi-overlay, per-patch labels |
-| Scale | proprietary scrape of frontier generators (GPT Image, Nano Banana, FLUX, Midjourney, Grok) | everything above is public + locally generatable |
+| Scale | proprietary scrape of frontier generators (GPT Image, Nano Banana, FLUX, Midjourney, Grok) | everything above is public |
 
 Reference numbers to rival (macro accuracy / mAP):
 
@@ -67,7 +67,6 @@ designed around:
 | **SID_Set** | 210k train images. Three classes: real / full synthetic / tampered. We keep **synthetic + tampered** as fake. | Stream `saberzl/SID_Set`. Optional slice: `scripts/fetch_data.py sid-set --max-shards 16` |
 | **DDA-Training-Set** | VAE reconstructions of COCO train, format-aligned (PNG, spatial). Fake half only. | 11-part zip, not streamable. `python get_datasets.py --only dda-train` then folders `dda-train/fake` |
 | **Synthbuster** | 9 modern families: DALLE2/3, Firefly, Midjourney v5, SD 1.3/1.4/2.1, SDXL | `scripts/download_synthbuster.py` (Zenodo, CC-BY) → `F:/techjam/synthbuster` |
-| **Local synthetic mirrors** | frontier-family coverage + *AI-edited photos* (img2img), grounded in real-content captions so the detector can't cheat on content priors | `scripts/generate_mirrors.py` (diffusers on a single 12GB GPU) → `F:/techjam/mirrors` |
 | **Your data / future generators** | anything new (GPT Image, Nano Banana, Riverflow...) drops in without code changes | any HF dataset (streamed) or local folder |
 
 Everything lives under `F:/techjam` (override with `SEER_DATA_ROOT`); the HF
@@ -75,25 +74,12 @@ cache is redirected there too. Local parquet is read in streaming mode - no
 network, no arrow cache duplication - so repeated epochs cost nothing.
 
 Weights are per-source sampling probabilities in the config, so no family
-dominates. Synthetic mirroring details (`generate_mirrors.py`):
-
-1. **Prompt grounding** — harvest the real-content LAION captions that
-   Community Forensics generators were seeded with (or caption your own
-   folder with a local VLM, e.g. Qwen2.5-VL — the full Pangram technique).
-2. **txt2img mirrors** — generate with SDXL / SDXL-Turbo / FLUX.1-schnell /
-   SD3.5-M / SD1.5 at each model's native resolution, PNG-encoded to
-   preserve generator fingerprints.
-3. **img2img edits** — strength-0.2–0.7 regenerations of real photos,
-   simulating edit tools (which regenerate the whole image — the reason
-   Pangram flags edited images as fully-AI).
-4. **Paired negatives** — the harvested real images are saved alongside and
-   used as reals, keeping content distributions matched.
+dominates.
 
 ## Setup
 
 ```bash
 uv sync                     # torch (CUDA), transformers, datasets, ...
-uv sync --group gen         # optional: diffusers for synthetic mirroring
 uv run pytest tests -q      # end-to-end smoke tests (no network needed)
 ```
 
@@ -126,9 +112,6 @@ uv run scripts/fetch_data.py flux-reason-6m --max-shards 8
 uv run scripts/fetch_data.py sid-set --max-shards 16
 uv run python get_datasets.py --only dda-train            # 11-part zip, ~113 GB
 uv run scripts/download_synthbuster.py
-uv run scripts/generate_mirrors.py --generator sdxl        --n 2000
-uv run scripts/generate_mirrors.py --generator flux-schnell --n 1000 --offload
-uv run scripts/generate_mirrors.py --generator sdxl --mode img2img --strength 0.45 --n 500
 
 # 4. full training (hero config = the mixture above)
 uv run python main.py train --config configs/seer_vitl_512.yaml          # A100-class
@@ -262,11 +245,11 @@ head, so probe checkpoints produce verdicts but no heatmaps.
 ## Limitations (honest ones)
 
 - Frontier-generator coverage (GPT Image, Nano Banana, Grok, Riverflow) is
-  API-gated; our mirrors cover the *families* (diffusion, autoregressive,
-  commercial) via SDXL/FLUX/SD3.5 + Synthbuster, not the exact models. Swap
-  in real outputs via any folder/HF source as they become available.
+  API-gated; the public mix covers those *families* via FLUX-Reason, frontier
+  fakes, and Synthbuster, not the exact latest APIs. Swap in real outputs
+  via any folder/HF source as they become available.
 - CommunityForensics-Small is SD-derivative-heavy — the weighted mixture
-  mitigates, more mirror families help more.
+  mitigates that.
 - No deepfake/face-swap detection (Pangram's initial release doesn't either).
 - Probe checkpoints (frozen backbone) are page-level only - no heatmaps.
 
