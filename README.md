@@ -62,6 +62,10 @@ designed around:
 |---|---|---|
 | **NTIRE 2026** | 42 generators spanning 2022–2026, real/fake matched on resolution, aspect ratio and JPEG quality, with per-image degradation labels. One 19 GB shard is a complete training set. | `python get_datasets.py --tier 1` → `$SEER_DATA_ROOT/ntire`. Mixture type `ntire`; eval `--dataset ntire_val` / `ntire_val_hard` / `ntire_test` |
 | **CommunityForensics-Small** | 278K fakes from **4,803 generators** (LatDiff/PixDiff/GAN) + 278K paired reals. Generator *diversity* is the main driver of generalization to unseen generators (CVPR 2025). | `scripts/fetch_data.py comfor-small` → local parquet on `F:/techjam` (one-time download, then disk-speed reads) |
+| **FLUX-Reason-6M** | 5.9M **FLUX.1-dev** images (all fake). Stream; the full dump is ~882 GB. | mixture `type: hf` on `LucasFang/FLUX-Reason-6M`, `label: 1`. Optional slice: `scripts/fetch_data.py flux-reason-6m --max-shards 8` |
+| **Frontier fakes** | Midjourney, DALL-E, Stable Diffusion, **Nano Banana Pro** — fake class only. The Hub ClassLabel is inverted (`0=fake`, `1=real`). | `scripts/fetch_data.py frontier-fakes` (~3 GB train). Mixture remaps then `keep_label: 1` |
+| **SID_Set** | 210k train images. Three classes: real / full synthetic / tampered. We keep **synthetic + tampered** as fake. | Stream `saberzl/SID_Set`. Optional slice: `scripts/fetch_data.py sid-set --max-shards 16` |
+| **DDA-Training-Set** | VAE reconstructions of COCO train, format-aligned (PNG, spatial). Fake half only. | 11-part zip, not streamable. `python get_datasets.py --only dda-train` then folders `dda-train/fake` |
 | **Synthbuster** | 9 modern families: DALLE2/3, Firefly, Midjourney v5, SD 1.3/1.4/2.1, SDXL | `scripts/download_synthbuster.py` (Zenodo, CC-BY) → `F:/techjam/synthbuster` |
 | **Local synthetic mirrors** | frontier-family coverage + *AI-edited photos* (img2img), grounded in real-content captions so the detector can't cheat on content priors | `scripts/generate_mirrors.py` (diffusers on a single 12GB GPU) → `F:/techjam/mirrors` |
 | **Your data / future generators** | anything new (GPT Image, Nano Banana, Riverflow...) drops in without code changes | any HF dataset (streamed) or local folder |
@@ -116,6 +120,11 @@ uv run python get_datasets.py --list                      # the full plan; downl
 uv run python get_datasets.py --tier 1                    # NTIRE train/val/test + COCO (~25 GB)
 uv run python dataset_stats.py --tier 1                   # remote metadata only, no images
 uv run scripts/fetch_data.py comfor-small                 # full ~260GB; add --max-shards 30 for a slice
+uv run scripts/fetch_data.py frontier-fakes               # MJ / DALL-E / SD / Nano Banana Pro (~3 GB)
+# FLUX-Reason-6M is streamed (882 GB) — optional local slice:
+uv run scripts/fetch_data.py flux-reason-6m --max-shards 8
+uv run scripts/fetch_data.py sid-set --max-shards 16
+uv run python get_datasets.py --only dda-train            # 11-part zip, ~113 GB
 uv run scripts/download_synthbuster.py
 uv run scripts/generate_mirrors.py --generator sdxl        --n 2000
 uv run scripts/generate_mirrors.py --generator flux-schnell --n 1000 --offload

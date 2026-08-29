@@ -6,6 +6,7 @@ out falls back to these defaults. CLI overrides use dotted paths, e.g.
 """
 
 import dataclasses
+import os
 import typing
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -24,7 +25,9 @@ class SourceSpec:
                     shards (downloaded once via scripts/fetch_data.py to
                     local_dirs) and falls back to HF hub streaming.
       * "hf"      - any HF dataset; give image_col and either label_col or a
-                    fixed label (e.g. modern-generator sets, crawled AI art)
+                    fixed label (e.g. modern-generator sets, crawled AI art).
+                    label_map remaps raw values onto 0=real / 1=fake;
+                    keep_label drops other classes after remapping.
       * "folders" - local image dirs; real_dirs / fake_dirs (either optional).
                     Used for materialized downloads and synthetic mirrors.
       * "ntire"   - NTIRE 2026 labelled splits (via get_datasets.py).
@@ -49,6 +52,9 @@ class SourceSpec:
     label_col: Optional[str] = None
     label: Optional[int] = None  # fixed label when label_col is None
     generator_col: Optional[str] = None
+    # remaps raw column values onto our 0=real / 1=fake convention
+    label_map: Optional[dict] = None
+    keep_label: Optional[int] = None  # drop rows whose mapped label differs
     # folders
     real_dirs: List[str] = field(default_factory=list)
     fake_dirs: List[str] = field(default_factory=list)
@@ -281,13 +287,35 @@ def apply_overrides(d: dict, overrides: List[str]) -> dict:
     return d
 
 
+def _rewrite_data_paths(obj):
+    """Map Windows ``F:/techjam`` paths and ``$SEER_DATA_ROOT`` onto DATA_ROOT."""
+    from .paths import DATA_ROOT
+
+    prefix = "F:/techjam"
+
+    def one(value):
+        if not isinstance(value, str):
+            return value
+        expanded = os.path.expandvars(value)
+        if expanded.lower().startswith(prefix.lower()):
+            rest = expanded[len(prefix):].lstrip("/\\")
+            return str(DATA_ROOT / rest)
+        return expanded
+
+    if isinstance(obj, dict):
+        return {k: _rewrite_data_paths(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_rewrite_data_paths(v) for v in obj]
+    return one(obj)
+
+
 def load_config(path: Optional[str] = None, overrides: Optional[List[str]] = None) -> TrainConfig:
     d = asdict(TrainConfig())
     if path:
         with open(path, "r", encoding="utf-8") as f:
             d = _deep_update(d, yaml.safe_load(f) or {})
     d = apply_overrides(d, overrides)
-    return _build(TrainConfig, d)
+    return _build(TrainConfig, _rewrite_data_paths(d))
 
 
 def config_to_dict(cfg: TrainConfig) -> dict:

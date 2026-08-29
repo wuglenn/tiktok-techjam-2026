@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-Source = Literal["hf", "hf_files", "url", "kaggle", "modelscope", "generate", "manual"]
+Source = Literal["hf", "hf_files", "url", "kaggle", "modelscope", "generate", "manual", "stream"]
 
 
 @dataclass(frozen=True)
@@ -77,18 +77,17 @@ REGISTRY: tuple[DatasetSpec, ...] = (
     ),
     DatasetSpec(
         key="ntire-train",
-        name="NTIRE 2026 train shard 0",
+        name="NTIRE 2026 train (all 6 shards)",
         source="hf_files",
         tier=1,
         role="Primary training source: 42 generators (2022-2026), real/fake matched on resolution, aspect ratio and JPEG quality.",
         repo_id=NTIRE_TRAIN,
-        files=("shard_0.zip",),
-        approx_gb=19.0,
+        files=tuple(f"shard_{i}.zip" for i in range(6)),
+        approx_gb=114.0,
         licence="untagged",
         homepage=f"https://huggingface.co/datasets/{NTIRE_TRAIN}",
         notes=(
-            "6 shards of ~50k, all distribution-matched, so one shard is a valid training set.",
-            "Full train split is 277,650 images / 114 GB.",
+            "Full train split: 277,650 images across 6 distribution-matched shards.",
         ),
     ),
     DatasetSpec(
@@ -111,15 +110,14 @@ REGISTRY: tuple[DatasetSpec, ...] = (
         tier=2,
         role="Generator breadth: 4,803 generators, the strongest driver of unseen-architecture transfer.",
         repo_id="OwensLab/CommunityForensics-Small",
-        approx_gb=106.5,
+        approx_gb=260.0,
         licence="cc-by-nc-sa-4.0 (NON-COMMERCIAL, viral SA)",
         homepage="https://huggingface.co/datasets/OwensLab/CommunityForensics-Small",
         stat_columns=("format", "resolution", "label", "architecture", "subset"),
         notes=(
+            "Full Small dump: ~186 parquet shards, ~260 GB.",
             "Shards are SORTED BY LABEL: 0-92 fake, 93 mixed, 94-185 real.",
-            "Default selection is stride-3 keeping all of 70-92 (the only GAN/PixDiff data).",
             "Measured confound: 'PNG => fake' alone scores 71.4% balanced accuracy.",
-            "Measured confound: every fake is 512x512, 256x256 or 1024x1024.",
             "Contains NO commercial generators (no DALL-E / Midjourney / FLUX).",
         ),
     ),
@@ -137,17 +135,73 @@ REGISTRY: tuple[DatasetSpec, ...] = (
     ),
     DatasetSpec(
         key="dda-train",
-        name="DDA training pairs",
-        source="generate",
+        name="DDA training pairs (fakes)",
+        source="hf_files",
         tier=2,
-        role="Near-boundary hard negatives + the format-alignment protocol.",
+        role="Fake-only: DDA-aligned VAE reconstructions of COCO train. Near-boundary hard negatives.",
         repo_id="Junwei-Xi/DDA-Training-Set",
+        files=(
+            "DDA-Training-Set_split.zip",
+            *(f"DDA-Training-Set_split.z{i:02d}" for i in range(1, 11)),
+        ),
         approx_gb=113.0,
         licence="apache-2.0",
         homepage="https://huggingface.co/datasets/Junwei-Xi/DDA-Training-Set",
         notes=(
-            "DO NOT DOWNLOAD: 11-part split ZIP, unstreamable, ~226 GB peak disk.",
-            "Regenerate instead: COCO train2017 + SD-2.1 VAE encode/decode, ~1 h for 20-30k pairs.",
+            "11-part split ZIP, not streamable. Peak disk ~226 GB to join+extract.",
+            "After fetch, join volumes then organize into fake/ (and real/).",
+            "Mixture uses the fake half only (folders source).",
+        ),
+    ),
+    DatasetSpec(
+        key="flux-reason-6m",
+        name="FLUX-Reason-6M",
+        source="stream",
+        tier=2,
+        role="Fake-only: 5.9M FLUX.1-dev images. Stream; do not snapshot (~882 GB).",
+        repo_id="LucasFang/FLUX-Reason-6M",
+        approx_gb=882.0,
+        licence="apache-2.0",
+        homepage="https://huggingface.co/datasets/LucasFang/FLUX-Reason-6M",
+        stat_columns=("image",),
+        notes=(
+            "100% AI-generated (FLUX.1-dev). Treat every row as fake (label=1).",
+            "Full dump is 1,180 shards / ~882 GB. Default fetch is 64 shards (~48 GB).",
+        ),
+    ),
+    DatasetSpec(
+        key="frontier-fakes",
+        name="Midjourney / DALL-E / SD / Nano Banana Pro (fakes)",
+        source="hf_files",
+        tier=2,
+        role="Fake-only slice of a labelled frontier-generator set (Nano Banana Pro, Midjourney, DALL-E, SD).",
+        repo_id="julienlucas/midjourney-dalle-sd-nanobananapro-dataset",
+        files=tuple(f"data/train-{i:05d}-of-00009.parquet" for i in range(9)),
+        approx_gb=3.1,
+        licence="mit",
+        homepage="https://huggingface.co/datasets/julienlucas/midjourney-dalle-sd-nanobananapro-dataset",
+        stat_columns=("label",),
+        notes=(
+            "ClassLabel is INVERTED vs our convention: 0 = fake, 1 = real.",
+            "Training keeps only the fake class after remapping (keep_label=1).",
+            "Train split is ~10.7k rows, about half fake; test (2k) is held out.",
+        ),
+    ),
+    DatasetSpec(
+        key="sid-set",
+        name="SID_Set (fakes)",
+        source="stream",
+        tier=2,
+        role="Fake-only: full-synthetic + tampered social-media images (drop the real class).",
+        repo_id="saberzl/SID_Set",
+        approx_gb=140.0,
+        licence="cc-by-4.0",
+        homepage="https://huggingface.co/datasets/saberzl/SID_Set",
+        stat_columns=("label",),
+        notes=(
+            "Three classes: 0=real, 1=full synthetic, 2=tampered. Map 1 and 2 → fake.",
+            "STREAM: 249 train parquet shards, ~140 GB. Mixture type hf, keep_label=1.",
+            "Optional slice: uv run scripts/fetch_data.py sid-set --max-shards 16",
         ),
     ),
     DatasetSpec(
@@ -163,19 +217,6 @@ REGISTRY: tuple[DatasetSpec, ...] = (
         stat_columns=("label", "source"),
     ),
     # ---------------- tier 3 : optional ----------------
-    DatasetSpec(
-        key="sid-set",
-        name="SID_Set",
-        source="hf_files",
-        tier=3,
-        role="Only for tampering/localisation. Synthetic half is essentially one generator (FLUX).",
-        repo_id="saberzl/SID_Set",
-        approx_gb=140.0,
-        licence="cc-by-4.0",
-        homepage="https://huggingface.co/datasets/saberzl/SID_Set",
-        stat_columns=("label",),
-        notes=("Worst value-per-GB in the plan; 100k tampered images with masks is its unique asset.",),
-    ),
     DatasetSpec(
         key="cifake",
         name="CIFAKE",

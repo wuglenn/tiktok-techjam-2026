@@ -38,19 +38,55 @@ data:
       dataset: OwensLab/CommunityForensics-Small
       split: train
       shuffle_buffer: 8192
-      weight: 0.50
+      weight: 0.35
+
+    - name: flux-reason
+      type: hf
+      dataset: LucasFang/FLUX-Reason-6M
+      image_col: image
+      label: 1
+      shuffle_buffer: 2048
+      weight: 0.10
+
+    - name: frontier-fakes
+      type: hf
+      dataset: julienlucas/midjourney-dalle-sd-nanobananapro-dataset
+      split: train
+      image_col: image
+      label_col: label
+      label_map: {0: 1, 1: 0, fake: 1, real: 0}
+      keep_label: 1
+      shuffle_buffer: 1024
+      weight: 0.07
+
+    - name: sid-set
+      type: hf
+      dataset: saberzl/SID_Set
+      split: train
+      image_col: image
+      label_col: label
+      label_map: {0: 0, 1: 1, 2: 1}
+      keep_label: 1
+      shuffle_buffer: 2048
+      weight: 0.08
+
+    - name: dda-train
+      type: folders
+      fake_dirs: [data/dda-train/fake]
+      real_dirs: []
+      weight: 0.06
 
     - name: synthbuster
       type: folders
       fake_dirs: [data/synthbuster/fake]
       real_dirs: []
-      weight: 0.10
+      weight: 0.09
 
     - name: mirrors
       type: folders
       real_dirs: [data/mirrors/real]
       fake_dirs: [data/mirrors/sdxl, data/mirrors/flux-schnell, data/mirrors/sd15, data/mirrors/sdxl-turbo, data/mirrors/sd35-medium, data/mirrors/sdxl_img2img]
-      weight: 0.40
+      weight: 0.25
 
 augment:
   jpeg_prob: 0.75

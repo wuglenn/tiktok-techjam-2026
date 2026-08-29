@@ -12,6 +12,12 @@ cache duplication). Supports partial fetches with --max-shards.
 
   # the eval set
   uv run scripts/fetch_data.py comfor-eval
+
+  # frontier fakes (~3 GB train parquet) and a FLUX-Reason slice
+  uv run scripts/fetch_data.py frontier-fakes
+  uv run scripts/fetch_data.py flux-reason-6m --max-shards 8
+  uv run scripts/fetch_data.py sid-set --max-shards 16
+  uv run scripts/fetch_data.py dda-train   # 11-part zip, ~113 GB; then get_datasets extract
 """
 
 import argparse
@@ -24,6 +30,15 @@ from seer.paths import DATA_ROOT
 FETCHABLES = {
     "comfor-small": dict(repo="OwensLab/CommunityForensics-Small", patterns=["data/*.parquet"]),
     "comfor-eval": dict(repo="OwensLab/CommunityForensics-Eval", patterns=["data/*.parquet"]),
+    # all-fake FLUX.1-dev; 1180 shards / ~882 GB — always pass --max-shards
+    "flux-reason-6m": dict(repo="LucasFang/FLUX-Reason-6M", patterns=["**/*.parquet"]),
+    # train split only (test held out); filter to fakes in the mixture via keep_label
+    "frontier-fakes": dict(
+        repo="julienlucas/midjourney-dalle-sd-nanobananapro-dataset",
+        patterns=["data/train-*.parquet"],
+    ),
+    "sid-set": dict(repo="saberzl/SID_Set", patterns=["data/train-*.parquet"]),
+    "dda-train": dict(repo="Junwei-Xi/DDA-Training-Set", patterns=["DDA-Training-Set_split.*"]),
 }
 
 
@@ -68,7 +83,8 @@ def main():
     print(f"[fetch] done. shards in {out}")
     print("\nPoint your training config at it:")
     print("  data:")
-    print(f"    local_dirs: ['{(out / 'data').as_posix()}']")
+    # parquet_files() walks recursively, so the repo root is enough
+    print(f"    local_dirs: ['{out.as_posix()}']")
 
 
 if __name__ == "__main__":

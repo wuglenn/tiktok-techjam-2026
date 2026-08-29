@@ -21,7 +21,7 @@ import os
 import random
 import re
 from pathlib import Path
-from typing import Iterator, List, Optional
+from typing import Iterator, List, Mapping, Optional
 
 import torch
 import torch.nn.functional as F
@@ -36,6 +36,8 @@ try:  # silence dataset download progress bars
         pass
 except Exception:  # pragma: no cover
     hfds = None
+
+from .labels import normalize_label
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
@@ -198,7 +200,12 @@ class ComforStream(torch.utils.data.IterableDataset):
 
 class HFGenericStream(torch.utils.data.IterableDataset):
     """Any HF dataset: read `image_col` as the image and derive the label
-    from `label_col` (if given) or a fixed `label` (e.g. an all-fake set)."""
+    from `label_col` (if given) or a fixed `label` (e.g. an all-fake set).
+
+    ``label_map`` remaps raw values onto 0=real / 1=fake. ``keep_label``
+    drops every other class after remapping — use this for fake-only
+    slices of mixed sets whose ClassLabel is inverted.
+    """
 
     def __init__(
         self,
@@ -212,6 +219,9 @@ class HFGenericStream(torch.utils.data.IterableDataset):
         max_samples: Optional[int] = None,
         seed: int = 0,
         name: str = "",
+        label_map: Optional[Mapping] = None,
+        keep_label: Optional[int] = None,
+        local_dirs: Optional[List[str]] = None,
     ):
         super().__init__()
         if hfds is None:
@@ -226,23 +236,33 @@ class HFGenericStream(torch.utils.data.IterableDataset):
         self._max_samples = max_samples
         self._seed = seed
         self._name = name or dataset
+        self._label_map = dict(label_map) if label_map else None
+        self._keep_label = keep_label
+        self._local_files = parquet_files(local_dirs) if local_dirs else None
+
+    def _label_of(self, row: dict) -> Optional[int]:
+        if self._label_col is not None:
+            return normalize_label(row.get(self._label_col), self._label_map)
+        return int(self._label if self._label is not None else 0)
 
     def _iter_rows(self):
-        ds = hfds.load_dataset(self._dataset, split=self._split, streaming=True)
+        if self._local_files:
+            ds = hfds.load_dataset("parquet", data_files=self._local_files, split="train", streaming=True)
+        else:
+            ds = hfds.load_dataset(self._dataset, split=self._split, streaming=True)
         if self._shuffle_buffer > 0:
             ds = ds.shuffle(seed=self._seed, buffer_size=self._shuffle_buffer)
-        if self._max_samples:
-            ds = ds.take(self._max_samples)
         n = 0
         for row in ds:
             try:
+                lab = self._label_of(row)
+                if lab is None:
+                    continue
+                if self._keep_label is not None and int(lab) != int(self._keep_label):
+                    continue
                 img = _as_pil(row.get(self._image_col))
-                if self._label_col is not None:
-                    lab = int(row.get(self._label_col, 0))
-                else:
-                    lab = int(self._label or 0)
                 gen = str(row.get(self._generator_col)) if self._generator_col else self._name
-                yield {"image": img, "label": lab, "generator": gen or self._name,
+                yield {"image": img, "label": int(lab), "generator": gen or self._name,
                        "architecture": "", "image_name": ""}
             except Exception:
                 continue
@@ -437,6 +457,9 @@ def _source_iterator(spec, seed: int) -> Iterator[dict]:
             max_samples=spec.max_samples,
             seed=seed,
             name=spec.name,
+            label_map=spec.label_map,
+            keep_label=spec.keep_label,
+            local_dirs=spec.local_dirs or None,
         )
         return iter(ds)
     if spec.type == "folders":

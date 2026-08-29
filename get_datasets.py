@@ -8,19 +8,19 @@ already present is skipped, so this is safe to re-run.
     python get_datasets.py --only ntire-val mirage
     python get_datasets.py --tier 2 --dry-run     # show what tier 2 would cost
 
-Two entries deliberately do not download:
+Entries that do not download a full snapshot:
 
-* ``dda-train`` is an 11-part split ZIP that cannot be streamed or partially
-  fetched and needs ~226 GB of peak disk. An equivalent subset is regenerated
-  from COCO in about an hour instead.
-* ``cifake`` and ``wildfake-dalle`` need Kaggle / ModelScope credentials, so
-  the script prints the exact command rather than guessing at your auth setup.
+* ``flux-reason-6m`` (~882 GB) and ``sid-set`` (~140 GB) are streamed.
+* ``dda-train`` is an 11-part split ZIP (~113 GB, ~226 GB peak to join+extract).
+* ``cifake`` and ``wildfake-dalle`` need Kaggle / ModelScope credentials.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
+import subprocess
 import sys
 import time
 import urllib.request
@@ -29,7 +29,7 @@ from pathlib import Path
 
 sys.path.insert(0, "src")
 
-from seer.datasets_registry import DatasetSpec, commfor_shard_selection, select  # noqa: E402
+from seer.datasets_registry import DatasetSpec, select  # noqa: E402
 from seer.paths import DATA_ROOT  # noqa: E402
 
 
@@ -46,14 +46,14 @@ def target_dir(spec: DatasetSpec) -> Path:
 # --------------------------------------------------------------------------
 
 def fetch_hf_files(spec: DatasetSpec, dry_run: bool) -> list[Path]:
-    from huggingface_hub import hf_hub_download, list_repo_files
-
     dest = target_dir(spec)
     if spec.key.startswith("ntire"):
         dest = dest / spec.repo_id.split("/")[-1]
 
     wanted = list(spec.files)
     if not wanted:
+        from huggingface_hub import list_repo_files
+
         wanted = _default_file_selection(spec, list_repo_files(spec.repo_id, repo_type="dataset"))
 
     print(f"  {len(wanted)} file(s) -> {dest}")
@@ -63,6 +63,8 @@ def fetch_hf_files(spec: DatasetSpec, dry_run: bool) -> list[Path]:
         if len(wanted) > 6:
             print(f"    ... and {len(wanted) - 6} more")
         return []
+
+    from huggingface_hub import hf_hub_download
 
     dest.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
@@ -89,13 +91,9 @@ def fetch_hf_files(spec: DatasetSpec, dry_run: bool) -> list[Path]:
 
 
 def _default_file_selection(spec: DatasetSpec, available: list[str]) -> list[str]:
-    """Pick a sensible subset when the spec does not name files explicitly."""
+    """Pick files when the spec does not name them explicitly."""
     if spec.key == "commfor-small":
-        # Shards are sorted by label and subset; a naive prefix or uniform
-        # stride drops every GAN and pixel-diffusion image. See registry.
-        keep = set(commfor_shard_selection())
-        return [f"data/HFCF_small_{i}.parquet" for i in sorted(keep)
-                if f"data/HFCF_small_{i}.parquet" in set(available)]
+        return [f for f in available if f.endswith(".parquet")]
     return [f for f in available if not f.startswith(".") and f != "README.md"]
 
 
@@ -130,6 +128,11 @@ def instruct_only(spec: DatasetSpec) -> list[Path]:
     elif spec.source == "generate":
         print("  intentionally not downloaded -- regenerate instead:")
         print("    python src/scripts/build_dda_pairs.py --n 25000")
+    elif spec.source == "stream":
+        print("  stream from the Hub; do not snapshot this repo.")
+        print(f"    mixture type: hf   dataset: {spec.repo_id}")
+        n = 16 if spec.key == "sid-set" else 8
+        print(f"    optional slice: uv run scripts/fetch_data.py {spec.key} --max-shards {n}")
     return []
 
 
@@ -137,19 +140,75 @@ def instruct_only(spec: DatasetSpec) -> list[Path]:
 # Extraction
 # --------------------------------------------------------------------------
 
+def join_split_zip(zip_path: Path) -> Path:
+    """Unsplit an Info-ZIP multi-disk archive (``.zip`` + ``.z01`` …)."""
+    siblings = sorted(zip_path.parent.glob(zip_path.stem + ".z*"))
+    if not siblings:
+        return zip_path
+    joined = zip_path.with_name(zip_path.stem + "-joined.zip")
+    if joined.exists():
+        print(f"    skip join {zip_path.name} (joined archive present)")
+        return joined
+    print(f"    join {1 + len(siblings)} volumes -> {joined.name}", flush=True)
+    subprocess.run(
+        ["zip", "-s", "0", str(zip_path), "--out", str(joined)],
+        check=True,
+    )
+    return joined
+
+
+_FAKE_DIR_HINTS = ("fake", "syn", "dda", "gen", "ai", "sd", "flux")
+_REAL_DIR_HINTS = ("real", "coco", "nature", "auth", "photo", "human")
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+
+
+def organize_dda(extracted: Path, dest: Path) -> None:
+    """Sort the DDA tree into dest/fake and dest/real from folder names."""
+    fake_root = dest / "fake"
+    real_root = dest / "real"
+    marker = dest / ".organized"
+    if marker.exists():
+        return
+    fake_root.mkdir(parents=True, exist_ok=True)
+    real_root.mkdir(parents=True, exist_ok=True)
+    counts = {"fake": 0, "real": 0, "skip": 0}
+    for dirpath, _, filenames in os.walk(extracted):
+        imgs = [f for f in filenames if Path(f).suffix.lower() in _IMAGE_EXTS]
+        if not imgs:
+            continue
+        name = Path(dirpath).name.lower()
+        if any(h in name for h in _REAL_DIR_HINTS) and not any(h in name for h in _FAKE_DIR_HINTS):
+            target, key = real_root, "real"
+        elif any(h in name for h in _FAKE_DIR_HINTS):
+            target, key = fake_root, "fake"
+        else:
+            counts["skip"] += len(imgs)
+            continue
+        for filename in imgs:
+            src = Path(dirpath) / filename
+            dst = target / filename
+            if not dst.exists():
+                shutil.copy2(src, dst)
+            counts[key] += 1
+    print(f"    organized DDA: {counts['fake']} fake, {counts['real']} real, {counts['skip']} skipped")
+    marker.touch()
+
+
 def extract_archives(paths: list[Path]) -> None:
     for path in paths:
         if path.suffix != ".zip":
             continue
+        archive = join_split_zip(path) if list(path.parent.glob(path.stem + ".z*")) else path
         out_dir = path.with_suffix("")
         marker = out_dir / ".extracted"
-        if marker.exists():
-            continue
-        print(f"    unzip {path.name}", flush=True)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        with zipfile.ZipFile(path) as archive:
-            archive.extractall(out_dir)
-        marker.touch()
+        if not marker.exists():
+            print(f"    unzip {archive.name}", flush=True)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(archive) as handle:
+                handle.extractall(out_dir)
+            marker.touch()
+        if path.name.startswith("DDA-Training-Set"):
+            organize_dda(out_dir, path.parent)
 
 
 # --------------------------------------------------------------------------

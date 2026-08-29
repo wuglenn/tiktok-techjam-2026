@@ -5,6 +5,11 @@
 # The mixture mirrors Pangram Image's data strategy:
 #   * comfor        - 4,803 open generators (diversity drives generalization,
 #                     CVPR 2025) + paired real images
+#   * flux-reason   - FLUX.1-dev fakes (LucasFang/FLUX-Reason-6M), streamed
+#   * frontier-fakes - Midjourney / DALL-E / SD / Nano Banana Pro fakes only
+#                     (ClassLabel on that repo is inverted: 0=fake, 1=real)
+#   * sid-set       - SID_Set full-synthetic + tampered (drop reals); 3-class
+#   * dda-train     - DDA-aligned COCO fakes (split zip → folders/fake)
 #   * synthbuster   - 9 modern families (DALLE2/3, Firefly, MJv5, SDXL...)
 #                     via scripts/download_synthbuster.py (fake-only)
 #   * mirrors/*     - our local synthetic mirroring output (SDXL, FLUX...
@@ -41,19 +46,57 @@ data:
       dataset: OwensLab/CommunityForensics-Small
       local_dirs: [F:/techjam/comfor-small/data]   # from scripts/fetch_data.py
       shuffle_buffer: 8192
-      weight: 0.50
+      weight: 0.35
+
+    - name: flux-reason
+      type: hf
+      dataset: LucasFang/FLUX-Reason-6M
+      image_col: image
+      label: 1                 # every row is FLUX.1-dev
+      shuffle_buffer: 2048
+      weight: 0.10
+
+    - name: frontier-fakes
+      type: hf
+      dataset: julienlucas/midjourney-dalle-sd-nanobananapro-dataset
+      split: train
+      image_col: image
+      label_col: label
+      # repo ClassLabel: 0=fake, 1=real — invert onto our 0=real / 1=fake
+      label_map: {0: 1, 1: 0, fake: 1, real: 0}
+      keep_label: 1            # fake images only
+      shuffle_buffer: 1024
+      weight: 0.07
+
+    - name: sid-set
+      type: hf
+      dataset: saberzl/SID_Set
+      split: train
+      image_col: image
+      label_col: label
+      # 0=real, 1=full synthetic, 2=tampered — collapse both non-reals to fake
+      label_map: {0: 0, 1: 1, 2: 1}
+      keep_label: 1
+      shuffle_buffer: 2048
+      weight: 0.08
+
+    - name: dda-train
+      type: folders
+      fake_dirs: [F:/techjam/dda-train/fake]
+      real_dirs: []            # fake half only
+      weight: 0.06
 
     - name: synthbuster
       type: folders
       fake_dirs: [F:/techjam/synthbuster/fake]
       real_dirs: []          # pair with mirrors/real below
-      weight: 0.10
+      weight: 0.09
 
     - name: mirrors
       type: folders
       real_dirs: [F:/techjam/mirrors/real]
       fake_dirs: [F:/techjam/mirrors/sdxl, F:/techjam/mirrors/flux-schnell, F:/techjam/mirrors/sd15, F:/techjam/mirrors/sdxl-turbo, F:/techjam/mirrors/sd35-medium, F:/techjam/mirrors/sdxl_img2img]
-      weight: 0.40
+      weight: 0.25
 
 augment:
   # benchmark robustness levels (GenImage / OmniAID / Pangram protocols)

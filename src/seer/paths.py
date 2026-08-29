@@ -1,13 +1,24 @@
 """Central data locations.
 
-All heavy artifacts (datasets, mirrors, HF cache) live on F:/techjam so they
-never touch the system drive. Override with SEER_DATA_ROOT.
+Override with SEER_DATA_ROOT. Defaults to the RunPod network volume
+(``/workspace/data``) when that mount exists, otherwise ``F:/techjam``.
 """
 
 import os
 from pathlib import Path
 
-DATA_ROOT = Path(os.environ.get("SEER_DATA_ROOT", "F:/techjam"))
+
+def _default_root() -> Path:
+    env = os.environ.get("SEER_DATA_ROOT")
+    if env:
+        return Path(env)
+    workspace = Path("/workspace")
+    if workspace.is_dir() and os.access(workspace, os.W_OK):
+        return workspace / "data"
+    return Path("F:/techjam")
+
+
+DATA_ROOT = _default_root()
 
 
 def setup() -> Path:
@@ -33,3 +44,12 @@ def synthbuster_dir() -> Path:
 def ntire_root() -> Path:
     """NTIRE 2026 train/val/test, as fetched by ``get_datasets.py``."""
     return DATA_ROOT / "ntire"
+
+
+def dda_train_dir() -> Path:
+    """DDA-Training-Set after join+extract (fake/ and optionally real/)."""
+    return DATA_ROOT / "dda-train"
+
+
+def sid_set_dir() -> Path:
+    return DATA_ROOT / "sid-set"
