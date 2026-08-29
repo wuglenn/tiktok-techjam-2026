@@ -133,6 +133,13 @@ def instruct_only(spec: DatasetSpec) -> list[Path]:
         print(f"    mixture type: hf   dataset: {spec.repo_id}")
         n = 16 if spec.key == "sid-set" else 8
         print(f"    optional slice: uv run scripts/fetch_data.py {spec.key} --max-shards {n}")
+    elif spec.source == "manual":
+        if spec.key == "open-images-v7":
+            print("  python scripts/download_open_images.py --workers 32 --max-gb 70")
+        elif spec.key == "laion400m-1":
+            print("  python scripts/download_laion400m.py --max-shards 8 --max-images 80000 --min-side 512")
+        elif spec.url:
+            print(f"  see {spec.url}")
     return []
 
 

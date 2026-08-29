@@ -32,7 +32,7 @@ Pangram Image is the current commercial SOTA. Their recipe, from the
 | Pillar | Pangram Image | Seer |
 |---|---|---|
 | Backbone | DINOv3, **full continuation fine-tuning** ("AI detection is not an ordinary downstream task") | same — DINOv3 ViT-L, full FT with layer-wise LR decay |
-| AI data | synthetic mirroring (VLM caption → regenerate) + scraped real-world AI images | 4,803 open generators (Community Forensics) + FLUX.1-dev + Midjourney/DALL-E/SD/Nano Banana Pro + SID synthetic/tampered + DDA COCO reconstructions + 9 modern families (Synthbuster) |
+| AI data | synthetic mirroring (VLM caption → regenerate) + scraped real-world AI images | 4,803 open generators (Community Forensics) + FLUX.1-dev + Midjourney/DALL-E/SD/Nano Banana Pro + SID full-synthetic + DDA COCO reconstructions + 9 modern families (Synthbuster) |
 | Real data | diverse web imagery; careful FPR control (WikiArt 0/2000, ReLAION 0.16% FPR) | paired reals from the mixture; WikiArt/folders FPR harness |
 | Augmentation | strong "in the wild" simulation (crop, edit, compression) | symmetric wild-simulation at benchmark levels: JPEG q∈{90,70,50,30}, blur σ∈{0.5,1,2}, resize 0.5×/0.25×, noise σ∈{0.02,0.05,0.10}, jitter ±20%, crop 80%, WebP, grayscale |
 | Mixed images | composite training → heatmaps | same: cropped overlays in all four real/fake pairings, stacked multi-overlay, per-patch labels |
@@ -60,11 +60,11 @@ designed around:
 
 | Source | What it covers | How |
 |---|---|---|
-| **NTIRE 2026** | 42 generators spanning 2022–2026, real/fake matched on resolution, aspect ratio and JPEG quality, with per-image degradation labels. One 19 GB shard is a complete training set. | `python get_datasets.py --tier 1` → `$SEER_DATA_ROOT/ntire`. Mixture type `ntire`; eval `--dataset ntire_val` / `ntire_val_hard` / `ntire_test` |
+| **NTIRE 2026** | 42 generators spanning 2022–2026, real/fake matched on resolution, aspect ratio and JPEG quality, with per-image degradation labels. Hero uses all 6 train shards (`shard: -1`). | `python get_datasets.py --tier 1` → `$SEER_DATA_ROOT/ntire`. Mixture type `ntire`; eval `--dataset ntire_val` / `ntire_val_hard` / `ntire_test` |
 | **CommunityForensics-Small** | 278K fakes from **4,803 generators** (LatDiff/PixDiff/GAN) + 278K paired reals. Generator *diversity* is the main driver of generalization to unseen generators (CVPR 2025). | `scripts/fetch_data.py comfor-small` → local parquet on `F:/techjam` (one-time download, then disk-speed reads) |
 | **FLUX-Reason-6M** | 5.9M **FLUX.1-dev** images (all fake). Stream; the full dump is ~882 GB. | mixture `type: hf` on `LucasFang/FLUX-Reason-6M`, `label: 1`. Optional slice: `scripts/fetch_data.py flux-reason-6m --max-shards 8` |
 | **Frontier fakes** | Midjourney, DALL-E, Stable Diffusion, **Nano Banana Pro** — fake class only. The Hub ClassLabel is inverted (`0=fake`, `1=real`). | `scripts/fetch_data.py frontier-fakes` (~3 GB train). Mixture remaps then `keep_label: 1` |
-| **SID_Set** | 210k train images. Three classes: real / full synthetic / tampered. We keep **synthetic + tampered** as fake. | Stream `saberzl/SID_Set`. Optional slice: `scripts/fetch_data.py sid-set --max-shards 16` |
+| **SID_Set** | 210k train images. Three classes: real / full synthetic / tampered. We keep **full synthetic** only. | Stream `saberzl/SID_Set`. Optional slice: `scripts/fetch_data.py sid-set --max-shards 16` |
 | **DDA-Training-Set** | VAE reconstructions of COCO train, format-aligned (PNG, spatial). Fake half only. | 11-part zip, not streamable. `python get_datasets.py --only dda-train` then folders `dda-train/fake` |
 | **Synthbuster** | 9 modern families: DALLE2/3, Firefly, Midjourney v5, SD 1.3/1.4/2.1, SDXL | `scripts/download_synthbuster.py` (Zenodo, CC-BY) → `F:/techjam/synthbuster` |
 | **Your data / future generators** | anything new (GPT Image, Nano Banana, Riverflow...) drops in without code changes | any HF dataset (streamed) or local folder |
@@ -112,6 +112,7 @@ uv run scripts/fetch_data.py flux-reason-6m --max-shards 8
 uv run scripts/fetch_data.py sid-set --max-shards 16
 uv run python get_datasets.py --only dda-train            # 11-part zip, ~113 GB
 uv run scripts/download_synthbuster.py
+uv run scripts/wire_gasstation.py                         # unpack GAS-Station tarballs for the hero mixture
 
 # 4. full training (hero config = the mixture above)
 uv run python main.py train --config configs/seer_vitl_512.yaml          # A100-class

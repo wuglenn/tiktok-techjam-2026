@@ -35,7 +35,7 @@ data:
   sources:
     - name: comfor
       type: comfor
-      dataset: OwensLab/CommunityForensics-Small
+      dataset: OwensLab/CommunityForensics-Small   # train only; Eval is held out
       split: train
       local_dirs: [/workspace/data/commfor-small]
       shuffle_buffer: 8192
@@ -68,16 +68,27 @@ data:
       split: train
       image_col: image
       label_col: label
-      label_map: {0: 0, 1: 1, 2: 1}
+      # 0=real, 1=full synthetic, 2=tampered — keep synthetic only
+      label_map: {0: 0, 1: 1}
       keep_label: 1
       local_dirs: [/workspace/data/sid-set]
       shuffle_buffer: 2048
       weight: 0.08
 
-    - name: dda-train
+    - name: ntire
+      type: ntire
+      split: train
+      shard: -1
+      weight: 0.20
+
+    - name: gs-images-v3
+      type: folders             # run: scripts/wire_gasstation.py
+      fake_dirs: [/workspace/data/gs-images-v3/wired/images.txt]
+      weight: 0.08
+
+    - name: gs-images-v4
       type: folders
-      fake_dirs: [/workspace/data/dda-train/fake]
-      real_dirs: []
+      fake_dirs: [/workspace/data/gs-images-v4/wired/images.txt]
       weight: 0.06
 
 augment:

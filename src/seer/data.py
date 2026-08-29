@@ -41,6 +41,13 @@ from .labels import normalize_label
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
+# Held-out Community Forensics Eval must never enter the training mixture.
+_COMFOR_EVAL_MARKERS = (
+    "communityforensics-eval",
+    "comfor-eval",
+    "comfor_eval",
+)
+
 
 def _natural_key(s: str):
     return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", s)]
@@ -424,6 +431,17 @@ class NtireStream:
             }
 
 
+def assert_not_comfor_eval_train(dataset: str = "", local_dirs: Optional[List[str]] = None) -> None:
+    """Raise if Community Forensics Eval is being used as training data."""
+    blob = " ".join([dataset or "", *(local_dirs or [])]).lower().replace("\\", "/")
+    if any(m in blob for m in _COMFOR_EVAL_MARKERS):
+        raise ValueError(
+            "Community Forensics Eval is held-out. Do not train on "
+            "OwensLab/CommunityForensics-Eval or local_dirs under comfor-eval. "
+            "Use CommunityForensics-Small for training and --dataset comfor_eval for eval."
+        )
+
+
 def _source_iterator(spec, seed: int) -> Iterator[dict]:
     """Build a (re-creatable) iterator for one source spec."""
     if spec.type == "ntire":
@@ -480,6 +498,8 @@ class MixtureDataset(torch.utils.data.IterableDataset):
         super().__init__()
         if not sources:
             raise ValueError("MixtureDataset needs at least one source")
+        for spec in sources:
+            assert_not_comfor_eval_train(getattr(spec, "dataset", ""), getattr(spec, "local_dirs", None))
         self.sources = list(sources)
         self.weights = [max(0.0, float(s.weight)) for s in self.sources]
         if sum(self.weights) <= 0:
@@ -489,6 +509,7 @@ class MixtureDataset(torch.utils.data.IterableDataset):
     def __iter__(self):
         rng = random.Random(self.seed)
         iters = [None] * len(self.sources)
+        dead = [False] * len(self.sources)
 
         def next_from(i):
             if iters[i] is None:
@@ -500,11 +521,18 @@ class MixtureDataset(torch.utils.data.IterableDataset):
                 return next(iters[i])
 
         while True:
-            i = rng.choices(range(len(self.sources)), weights=self.weights, k=1)[0]
+            live = [i for i, is_dead in enumerate(dead) if not is_dead]
+            if not live:
+                return
+            i = live[rng.choices(range(len(live)), weights=[self.weights[j] for j in live], k=1)[0]]
             try:
                 yield next_from(i)
+            except FileNotFoundError:
+                # folder listing not wired yet (e.g. GAS-Station before
+                # scripts/wire_gasstation.py) — drop that source, keep going
+                dead[i] = True
             except StopIteration:  # empty source, permanently
-                continue
+                dead[i] = True
 
 
 class ConcatDataset(torch.utils.data.Dataset):
@@ -531,6 +559,7 @@ def build_train_dataset(cfg) -> torch.utils.data.Dataset:
     if d.source == "mixture" and d.sources:
         return MixtureDataset(d.sources, seed=cfg.seed)
     if d.source in ("mixture", "comfor"):
+        assert_not_comfor_eval_train(d.dataset, d.local_dirs)
         # explicit comfor, or a mixture with no sources: Community Forensics
         return ComforStream(
             dataset=d.dataset,

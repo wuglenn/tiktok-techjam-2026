@@ -24,7 +24,7 @@ def test_frontier_classlabel_is_inverted():
     assert normalize_label("real", FRONTIER_MAP) == 0
 
 
-SID_MAP = {0: 0, 1: 1, 2: 1}
+SID_MAP = {0: 0, 1: 1}
 
 
 def test_registry_lists_new_fake_sources():
@@ -37,23 +37,65 @@ def test_registry_lists_new_fake_sources():
     assert frontier.repo_id.endswith("nanobananapro-dataset")
     assert BY_KEY["sid-set"].repo_id == "saberzl/SID_Set"
     assert BY_KEY["sid-set"].source == "stream"
-    assert BY_KEY["dda-train"].repo_id == "Junwei-Xi/DDA-Training-Set"
-    assert BY_KEY["dda-train"].source == "hf_files"
+    assert BY_KEY["gs-images-v3"].repo_id == "gasstation/gs-images-v3"
+    assert BY_KEY["gs-images-v4"].repo_id == "gasstation/gs-images-v4"
     keys = {s.key for s in select(tiers=[2])}
-    assert {"flux-reason-6m", "frontier-fakes", "sid-set", "dda-train"} <= keys
+    assert {"flux-reason-6m", "frontier-fakes", "sid-set", "gs-images-v3", "gs-images-v4"} <= keys
 
 
-def test_sid_collapses_tampered_to_fake():
+def test_sid_keeps_only_synthetic():
     assert normalize_label(0, SID_MAP) == 0
     assert normalize_label(1, SID_MAP) == 1
-    assert normalize_label(2, SID_MAP) == 1
-    assert normalize_label("2", SID_MAP) == 1
+    # tampered is not remapped to fake; keep_label=1 drops it
+    assert normalize_label(2, SID_MAP) != 1
+    assert normalize_label("2", SID_MAP) != 1
+
+
+def test_probe_config_keeps_sid_synthetic_only():
+    cfg = load_config("configs/seer_probe.yaml")
+    sid = next(s for s in cfg.data.sources if s.name == "sid-set")
+    assert sid.keep_label == 1
+    assert normalize_label(1, sid.label_map) == 1
+    assert normalize_label(2, sid.label_map) != 1
+
+
+def test_train_configs_exclude_comfor_eval():
+    from seer.data import assert_not_comfor_eval_train, build_train_dataset
+    from seer.config import SourceSpec, TrainConfig, DataConfig
+
+    for path in ("configs/seer_vitl_512.yaml", "configs/seer_probe.yaml"):
+        cfg = load_config(path)
+        for s in cfg.data.sources:
+            assert "eval" not in (s.dataset or "").lower()
+            assert not any("comfor-eval" in d.lower() for d in s.local_dirs)
+
+    assert_not_comfor_eval_train("OwensLab/CommunityForensics-Small", ["/workspace/data/commfor-small"])
+    try:
+        assert_not_comfor_eval_train("OwensLab/CommunityForensics-Eval")
+        raise AssertionError("eval dataset should be rejected")
+    except ValueError:
+        pass
+    try:
+        assert_not_comfor_eval_train("", ["/workspace/data/comfor-eval"])
+        raise AssertionError("eval local_dirs should be rejected")
+    except ValueError:
+        pass
+
+    cfg = TrainConfig(data=DataConfig(
+        source="mixture",
+        sources=[SourceSpec(name="bad", type="comfor", dataset="OwensLab/CommunityForensics-Eval")],
+    ))
+    try:
+        build_train_dataset(cfg)
+        raise AssertionError("build_train_dataset should reject Eval")
+    except ValueError as exc:
+        assert "held-out" in str(exc)
 
 
 def test_hero_config_keeps_only_frontier_fakes():
     cfg = load_config("configs/seer_vitl_512.yaml")
     by_name = {s.name: s for s in cfg.data.sources}
-    assert set(by_name) >= {"flux-reason", "frontier-fakes", "sid-set", "dda-train"}
+    assert set(by_name) >= {"flux-reason", "frontier-fakes", "sid-set", "ntire", "gs-images-v3", "gs-images-v4"}
     flux = by_name["flux-reason"]
     assert flux.type == "hf" and flux.label == 1 and flux.label_col is None
     front = by_name["frontier-fakes"]
@@ -62,7 +104,12 @@ def test_hero_config_keeps_only_frontier_fakes():
     assert normalize_label(1, front.label_map) == 0
     sid = by_name["sid-set"]
     assert sid.keep_label == 1
-    assert normalize_label(2, sid.label_map) == 1
+    assert normalize_label(1, sid.label_map) == 1
+    assert normalize_label(2, sid.label_map) != 1
     assert normalize_label(0, sid.label_map) == 0
-    dda = by_name["dda-train"]
-    assert dda.type == "folders" and dda.fake_dirs and not dda.real_dirs
+    ntire = by_name["ntire"]
+    assert ntire.type == "ntire" and ntire.split == "train" and ntire.shard == -1
+    gs3 = by_name["gs-images-v3"]
+    assert gs3.type == "folders" and gs3.fake_dirs
+    gs4 = by_name["gs-images-v4"]
+    assert gs4.type == "folders" and gs4.fake_dirs

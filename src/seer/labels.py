@@ -3,7 +3,7 @@
 Several public sets invert this (or use strings). The ClassLabel on
 ``julienlucas/midjourney-dalle-sd-nanobananapro-dataset`` is inverted
 (0 = fake, 1 = real). ``saberzl/SID_Set`` is three-class (0 = real,
-1 = full synthetic, 2 = tampered) — map 1 and 2 to fake.
+1 = full synthetic, 2 = tampered) — keep class 1 only.
 """
 
 from __future__ import annotations

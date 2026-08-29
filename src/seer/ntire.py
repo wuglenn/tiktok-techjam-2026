@@ -117,8 +117,39 @@ def load_train_shard(shard: int = 0) -> list[Sample]:
     return read_labelled_split(images_dir, labels_csv)
 
 
+def list_train_shards() -> list[int]:
+    """Shard indices present under the NTIRE train root (e.g. 0..5)."""
+    root = _train_dir()
+    if not root.exists():
+        return []
+    out: list[int] = []
+    for path in sorted(root.iterdir()):
+        if not path.is_dir() or not path.name.startswith("shard_"):
+            continue
+        suffix = path.name[len("shard_") :]
+        if suffix.isdigit():
+            out.append(int(suffix))
+    return out
+
+
+def load_train(shard: int = -1) -> list[Sample]:
+    """One shard, or every downloaded train shard when ``shard < 0``."""
+    if shard >= 0:
+        return load_train_shard(shard)
+    shards = list_train_shards()
+    if not shards:
+        raise FileNotFoundError(f"no train shards under {_train_dir()}")
+    samples: list[Sample] = []
+    for index in shards:
+        samples.extend(load_train_shard(index))
+    return samples
+
+
 def load_split(split: str = "train", shard: int = 0, hard: bool = False) -> list[Sample]:
-    """Dispatch to the matching NTIRE split loader."""
+    """Dispatch to the matching NTIRE split loader.
+
+    ``shard < 0`` (or ``split='train_all'``) concatenates every train shard.
+    """
     key = split.replace("-", "_")
     if key in ("val", "validation"):
         return load_val(hard=hard)
@@ -126,7 +157,9 @@ def load_split(split: str = "train", shard: int = 0, hard: bool = False) -> list
         return load_val(hard=True)
     if key == "test":
         return load_test()
-    return load_train_shard(shard)
+    if key in ("train_all", "all"):
+        return load_train(-1)
+    return load_train(shard)
 
 
 def stratified_subset(

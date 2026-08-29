@@ -32,7 +32,8 @@ class SourceSpec:
                     Used for materialized downloads and synthetic mirrors.
       * "ntire"   - NTIRE 2026 labelled splits (via get_datasets.py).
                     split is train / val / val_hard / test; shard selects
-                    a train shard. Labels live in CSV, not folder names.
+                    a train shard (shard < 0 = every train shard). Labels
+                    live in CSV, not folder names.
 
     weight: expected fraction of training samples drawn from this source.
     """
@@ -59,7 +60,7 @@ class SourceSpec:
     real_dirs: List[str] = field(default_factory=list)
     fake_dirs: List[str] = field(default_factory=list)
     # ntire (get_datasets.py --only ntire-train / ntire-val / ntire-test)
-    shard: int = 0
+    shard: int = 0  # train shard index; < 0 loads every downloaded shard
     hard: bool = False
     clean_only: bool = False
 

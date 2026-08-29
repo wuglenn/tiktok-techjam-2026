@@ -6,7 +6,13 @@ import numpy as np
 from PIL import Image
 
 from seer.datasets_registry import commfor_shard_selection, select
-from seer.ntire import _parse_list, read_labelled_split, stratified_subset
+from seer.ntire import (
+    _parse_list,
+    list_train_shards,
+    load_split,
+    read_labelled_split,
+    stratified_subset,
+)
 
 
 def test_parse_list():
@@ -55,6 +61,27 @@ def test_stratified_subset(tmp_path: Path):
     assert len(picked) == 4
     assert sum(s.label == 0 for s in picked) == 2
     assert sum(s.label == 1 for s in picked) == 2
+
+
+def test_load_train_all_shards(tmp_path: Path, monkeypatch):
+    import seer.ntire as ntire
+
+    for shard, names in ((0, ("a.jpg", "b.jpg")), (1, ("c.jpg",))):
+        root = tmp_path / f"shard_{shard}" / f"shard_{shard}"
+        images = root / "images"
+        images.mkdir(parents=True)
+        rows = ["image_name,label,distortions,distortion_scales,is_distorted"]
+        for i, name in enumerate(names):
+            Image.new("RGB", (4, 4)).save(images / name)
+            rows.append(f"{name},{i % 2},[],[],0")
+        (root / "labels.csv").write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(ntire, "_train_dir", lambda: tmp_path)
+    assert list_train_shards() == [0, 1]
+    assert len(load_split("train", shard=0)) == 2
+    all_train = load_split("train", shard=-1)
+    assert len(all_train) == 3
+    assert {s.path.name for s in all_train} == {"a.jpg", "b.jpg", "c.jpg"}
 
 
 def test_registry_tiers():

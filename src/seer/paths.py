@@ -53,3 +53,9 @@ def dda_train_dir() -> Path:
 
 def sid_set_dir() -> Path:
     return DATA_ROOT / "sid-set"
+
+
+def gs_images_dir(version: str) -> Path:
+    """GAS-Station dump root (``gs-images-v3`` / ``gs-images-v4``)."""
+    key = version if version.startswith("gs-images-") else f"gs-images-{version}"
+    return DATA_ROOT / key
