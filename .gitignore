@@ -1,0 +1,56 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+
+# --- Testing ---
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# --- Linting ---
+.ruff_cache/
+
+# --- Secrets / environment ---
+.env
+.env.*
+
+# --- Datasets (scripts/fetch_data.py, download_*.py) ---
+data/
+
+# --- Model weights (training checkpoints, HF/diffusers downloads) ---
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+*.onnx
+*.msgpack
+*.h5
+
+# --- HF / diffusers caches ---
+.cache/
+hf_cache/
+
+# --- Generated sample images ---
+samples/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# --- Editors ---
+.idea/
+.vscode/

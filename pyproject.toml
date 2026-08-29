@@ -1,0 +1,46 @@
+[project]
+name = "tiktok-techjam-2026"
+version = "0.1.0"
+description = "Seer - a sub-2B-parameter AI-generated image detector"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.6,<3",
+    "transformers>=4.56,<6",
+    "datasets>=3.2,<5",
+    "huggingface-hub>=0.30",
+    "pillow>=10.4,<12",
+    "numpy>=1.26,<3",
+    "pyyaml>=6",
+    "scikit-learn>=1.4",
+    "matplotlib>=3.8",
+    "tqdm>=4.66",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+gen = [
+    # optional: only needed for scripts/generate_mirrors.py (synthetic mirroring)
+    "diffusers>=0.33",
+    "accelerate>=1.0",
+    "sentencepiece>=0.2",
+    "protobuf>=4",
+]
+
+[tool.uv]
+package = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu124" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/seer"]

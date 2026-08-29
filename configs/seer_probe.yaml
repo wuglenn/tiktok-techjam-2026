@@ -1,0 +1,66 @@
+# Page-level multi-layer linear probe - the cheap ablation / baseline
+# against continuation fine-tuning (seer_vitl_512.yaml).
+#
+# The backbone stays frozen; a single linear layer is trained on features
+# tapped from several transformer blocks: early blocks carry high-frequency
+# statistics (where generator fingerprints live), mid and late blocks carry
+# increasingly semantic features. One logit per image (page), no patch
+# heatmaps. Set head_lr ~1e-3: with a frozen backbone the linear head wants
+# a larger LR than fine-tuning heads do.
+
+backbone: facebook/dinov3-vitl16-pretrain-lvd1689m  # gated: accept license + hf auth login
+pretrained: true
+res: 512
+batch_size: 64          # no backbone grads -> bigger batches fit
+grad_accum: 1
+max_steps: 20000
+head_lr: 1.0e-3
+weight_decay: 0.05
+warmup_steps: 500
+bf16: true
+grad_checkpointing: false
+ema_decay: 0.999
+eval_every: 2000
+log_every: 50
+out_dir: runs/seer_probe
+
+probe:
+  enabled: true
+  layers: []            # auto: evenly spaced taps -> [6, 12, 18, 23] on ViT-L
+  # layers: [3, 9, 15, -1]   # explicit: early -> late (0-based, -1 = final block)
+
+data:
+  source: mixture
+  val_max_samples: 4096
+  sources:
+    - name: comfor
+      type: comfor
+      dataset: OwensLab/CommunityForensics-Small
+      split: train
+      shuffle_buffer: 8192
+      weight: 0.50
+
+    - name: synthbuster
+      type: folders
+      fake_dirs: [data/synthbuster/fake]
+      real_dirs: []
+      weight: 0.10
+
+    - name: mirrors
+      type: folders
+      real_dirs: [data/mirrors/real]
+      fake_dirs: [data/mirrors/sdxl, data/mirrors/flux-schnell, data/mirrors/sd15, data/mirrors/sdxl-turbo, data/mirrors/sd35-medium, data/mirrors/sdxl_img2img]
+      weight: 0.40
+
+augment:
+  jpeg_prob: 0.75
+  jpeg_quality: [90, 70, 50, 30]
+  blur_sigma: [0.5, 1.0, 2.0]
+  noise_levels: [0.02, 0.05, 0.10]
+  downscale_levels: [0.5, 0.25]
+  color_jitter: 0.2
+  center_crop_prob: 0.15
+  downscale_prob: 0.30
+
+composite:
+  prob: 0.25            # page label stays "contains AI content"; patch labels unused

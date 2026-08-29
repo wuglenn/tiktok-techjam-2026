@@ -1,0 +1,72 @@
+# Seer hero recipe - DINOv3 ViT-L continuation training on the full
+# public data mixture. ~302M parameters (15% of the 2B budget).
+# Best run on an A100/H100 class GPU; see seer_vitl_local.yaml for 12GB.
+#
+# The mixture mirrors Pangram Image's data strategy:
+#   * comfor        - 4,803 open generators (diversity drives generalization,
+#                     CVPR 2025) + paired real images
+#   * synthbuster   - 9 modern families (DALLE2/3, Firefly, MJv5, SDXL...)
+#                     via scripts/download_synthbuster.py (fake-only)
+#   * mirrors/*     - our local synthetic mirroring output (SDXL, FLUX...
+#                     + img2img "AI edits") via scripts/generate_mirrors.py;
+#                     mirrors/real doubles as paired negatives
+#
+# Weights are relative sampling probabilities - tune so that no single
+# generator family dominates (the failure mode Pangram explicitly hit).
+
+backbone: facebook/dinov3-vitl16-pretrain-lvd1689m  # gated: accept license + hf auth login
+pretrained: true
+res: 512
+batch_size: 32
+grad_accum: 1
+max_steps: 60000
+lr: 1.0e-5
+head_lr: 1.0e-4
+llrd: 0.8
+weight_decay: 0.05
+warmup_steps: 1000
+bf16: true
+grad_checkpointing: false  # not needed on big GPUs
+ema_decay: 0.999
+eval_every: 2000
+log_every: 50
+out_dir: runs/seer_vitl
+
+data:
+  source: mixture
+  val_max_samples: 4096
+  sources:
+    - name: comfor
+      type: comfor
+      dataset: OwensLab/CommunityForensics-Small
+      local_dirs: [F:/techjam/comfor-small/data]   # from scripts/fetch_data.py
+      shuffle_buffer: 8192
+      weight: 0.50
+
+    - name: synthbuster
+      type: folders
+      fake_dirs: [F:/techjam/synthbuster/fake]
+      real_dirs: []          # pair with mirrors/real below
+      weight: 0.10
+
+    - name: mirrors
+      type: folders
+      real_dirs: [F:/techjam/mirrors/real]
+      fake_dirs: [F:/techjam/mirrors/sdxl, F:/techjam/mirrors/flux-schnell, F:/techjam/mirrors/sd15, F:/techjam/mirrors/sdxl-turbo, F:/techjam/mirrors/sd35-medium, F:/techjam/mirrors/sdxl_img2img]
+      weight: 0.40
+
+augment:
+  # benchmark robustness levels (GenImage / OmniAID / Pangram protocols)
+  jpeg_prob: 0.75
+  jpeg_quality: [90, 70, 50, 30]
+  blur_sigma: [0.5, 1.0, 2.0]
+  noise_levels: [0.02, 0.05, 0.10]
+  downscale_levels: [0.5, 0.25]
+  color_jitter: 0.2            # +/-20%
+  center_crop_prob: 0.15       # crop 80%
+  downscale_prob: 0.30
+
+composite:
+  prob: 0.25
+  patch_loss_weight: 0.5
+  mode: mixed                   # blend (seamless) + paste (hard overlay)
