@@ -36,6 +36,11 @@ def main(argv=None):
     p_eval.add_argument("--max-samples", type=int, default=None)
     p_eval.add_argument("--batch-size", type=int, default=16)
     p_eval.add_argument("--out-json", type=str, default=None)
+    p_eval.add_argument("--error-dir", type=str, default=None,
+                        help="dump the most confident false positives / false "
+                             "negatives there as heatmap panels")
+    p_eval.add_argument("--error-n", type=int, default=4,
+                        help="how many of each to keep (default 4)")
 
     p_infer = sub.add_parser("infer", help="classify images")
     p_infer.add_argument("--checkpoint", required=True)
@@ -70,6 +75,8 @@ def main(argv=None):
             real_dirs=args.real_dir,
             fake_dirs=args.fake_dir,
             out_json=args.out_json,
+            error_dir=args.error_dir,
+            error_n=args.error_n,
         )
 
     elif args.cmd == "infer":

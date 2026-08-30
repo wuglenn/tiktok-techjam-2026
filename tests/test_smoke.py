@@ -283,6 +283,92 @@ def test_metrics_and_heatmap(tmp_path=None):
     print(f"metrics + heatmap OK (prob={prob:.3f})")
 
 
+def test_error_bank_keeps_most_confident_mistakes():
+    """The bank must keep the *worst* k errors of each kind, and only errors."""
+    import tempfile
+    import torch as _torch
+    from seer.eval import ErrorBank
+
+    bank = ErrorBank(k=2, res=64)
+    img = _rand_pil(64, random.Random(3))
+    patch = _torch.zeros(16)  # 4x4 grid
+
+    # correct predictions are never kept
+    bank.add(img, 0.02, 0, patch, {"image_name": "ok_real.png"})
+    bank.add(img, 0.98, 1, patch, {"image_name": "ok_fake.png"})
+    assert bank.counts() == {"fp": 0, "fn": 0}
+
+    # false positives: reals scored above threshold, ranked by confidence
+    for p in (0.55, 0.99, 0.75):
+        bank.add(img, p, 0, patch, {"image_name": f"real_{p}.png"})
+    # false negatives: fakes scored below threshold, ranked by 1 - p
+    for p in (0.45, 0.01, 0.30):
+        bank.add(img, p, 1, patch, {"image_name": f"fake_{p}.png"})
+    assert bank.counts() == {"fp": 2, "fn": 2}
+
+    with tempfile.TemporaryDirectory() as d:
+        entries = bank.dump(d)
+        assert len(entries) == 4
+        fp = [e for e in entries if e["kind"] == "fp"]
+        fn = [e for e in entries if e["kind"] == "fn"]
+        assert [e["prob_ai"] for e in fp] == [0.99, 0.75]   # most confident first
+        assert [e["prob_ai"] for e in fn] == [0.01, 0.30]
+        for e in entries:
+            assert Path(e["file"]).exists()
+            assert e["explained"] is True
+
+    # a checkpoint without a patch head still dumps the image, unexplained
+    plain = ErrorBank(k=1, res=64)
+    plain.add(img, 0.9, 0, None, {"image_name": "no_head.png"})
+    with tempfile.TemporaryDirectory() as d:
+        entries = plain.dump(d)
+        assert len(entries) == 1 and entries[0]["explained"] is False
+        assert Path(entries[0]["file"]).exists()
+    print("error bank OK (top-k false positives / negatives + heatmaps)")
+
+
+def test_eval_dumps_error_analysis():
+    """End-to-end: folders eval writes metrics plus explained error panels."""
+    import json
+    import tempfile
+    from seer.eval import evaluate_checkpoint
+    from seer.model import save_checkpoint
+
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        (d / "real").mkdir()
+        (d / "fake").mkdir()
+        for i in range(4):
+            _rand_pil(256, random.Random(i)).save(d / "real" / f"r{i}.png")
+            _rand_pil(256, random.Random(i + 50)).save(d / "fake" / f"f{i}.png")
+
+        cfg = load_config(overrides=["backbone=tiny", "pretrained=false",
+                                     "res=224", "max_steps=1"])
+        model = SeerDetector("tiny", pretrained=False)
+        ckpt = str(d / "ckpt.pt")
+        save_checkpoint(ckpt, model, cfg, 1)
+
+        out_json = str(d / "metrics.json")
+        m = evaluate_checkpoint(
+            checkpoint=ckpt, dataset="folders",
+            real_dirs=[str(d / "real")], fake_dirs=[str(d / "fake")],
+            batch_size=4, device="cpu", res=224,
+            error_dir=str(d / "errors"), error_n=2, out_json=out_json,
+        )
+        assert m["n"] == 8 and m["n_real"] == 4 and m["n_fake"] == 4
+        saved = json.load(open(out_json, encoding="utf-8"))
+        assert saved["n"] == 8
+
+        # an untrained head cannot be right about both classes at threshold 0.5
+        entries = m.get("error_analysis") or []
+        assert entries, "expected at least one misclassification to dump"
+        for e in entries:
+            assert Path(e["file"]).exists()
+            assert 0.0 <= e["prob_ai"] <= 1.0
+            assert e["kind"] in ("fp", "fn")
+    print(f"eval error analysis OK ({len(entries)} panels)")
+
+
 def test_schedule():
     assert abs(cosine_schedule(0, 100, 10, 0.05) - 0.1) < 1e-9
     assert abs(cosine_schedule(100, 100, 10, 0.05) - 0.05) < 1e-9
