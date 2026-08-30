@@ -55,6 +55,12 @@ def sid_set_dir() -> Path:
     return DATA_ROOT / "sid-set"
 
 
+def openfake_dir() -> Path:
+    """OpenFake after scripts/openfake.py: ``train/`` is the mixture source,
+    ``holdout_core/`` and ``holdout_reddit/`` are never trained on."""
+    return DATA_ROOT / "openfake"
+
+
 def gs_images_dir(version: str) -> Path:
     """GAS-Station dump root (``gs-images-v3`` / ``gs-images-v4``)."""
     key = version if version.startswith("gs-images-") else f"gs-images-{version}"

@@ -32,11 +32,11 @@ Pangram Image is the current commercial SOTA. Their recipe, from the
 | Pillar | Pangram Image | Seer |
 |---|---|---|
 | Backbone | DINOv3, **full continuation fine-tuning** ("AI detection is not an ordinary downstream task") | same — DINOv3 ViT-L, full FT with layer-wise LR decay |
-| AI data | synthetic mirroring (VLM caption → regenerate) + scraped real-world AI images | Community Forensics (4,803 gens) + NTIRE (42 gens) + FLUX.1-dev + frontier commercial fakes + SID synthetic + GAS-Station v3/v4 |
-| Real data | diverse web imagery; careful FPR control (WikiArt 0/2000, ReLAION 0.16% FPR) | Community Forensics + NTIRE matched reals + jp1924/Laion400m-1 + Open Images V7; WikiArt/folders FPR harness |
+| AI data | synthetic mirroring (VLM caption → regenerate) + scraped real-world AI images | Community Forensics (4,803 gens) + NTIRE (42 gens) + OpenFake's frontier/community generators, selected by measured recall + FLUX.1-dev + SID synthetic + GAS-Station v3/v4 |
+| Real data | diverse web imagery; careful FPR control (WikiArt 0/2000, ReLAION 0.16% FPR) | Community Forensics + NTIRE matched reals + jp1924/Laion400m-1 + Open Images V7 + OpenFake LAION/Pexels; WikiArt/folders FPR harness |
 | Augmentation | strong "in the wild" simulation (crop, edit, compression) | symmetric wild-simulation at benchmark levels: JPEG q∈{90,70,50,30}, blur σ∈{0.5,1,2}, resize 0.5×/0.25×, noise σ∈{0.02,0.05,0.10}, jitter ±20%, crop 80%, WebP, grayscale |
 | Mixed images | composite training → heatmaps | same: cropped overlays in all four real/fake pairings, stacked multi-overlay, per-patch labels |
-| Scale | proprietary scrape of frontier generators (GPT Image, Nano Banana, FLUX, Midjourney, Grok) | everything above is public |
+| Scale | proprietary scrape of frontier generators (GPT Image, Nano Banana, FLUX, Midjourney, Grok) | everything above is public — OpenFake supplies the same families (nano-banana, GPT Image 1, Midjourney 6, Ideogram 3, FLUX.2 Klein, Grok 2, Seedream 4.5) |
 
 Reference numbers to rival (macro accuracy / mAP):
 
@@ -62,17 +62,44 @@ weighted mix. Missing folder sources are dropped at train time, not fatal.
 
 | Source | Class | Weight | What it covers |
 |---|---|---|---|
-| **NTIRE 2026 train** | mixed | 0.30 | 42 gens (2022–2026), all 6 shards, real/fake matched |
-| **CommunityForensics-Small** | mixed | 0.26 | 4,803 open generators + paired reals. Eval is held out |
-| **GAS-Station v4 / v3** | fake | 0.11 / 0.10 | weekly open-model dumps after `wire_gasstation.py` |
-| **laion400m-1** | real | 0.10 | `jp1924/Laion400m-1` images in parquet (not a URL scrape) |
-| **Open Images V7** | real | 0.10 | validation + test photographs |
+| **NTIRE 2026 train** | mixed | 0.28 | 42 gens (2022–2026), all 6 shards, real/fake matched |
+| **CommunityForensics-Small** | mixed | 0.22 | 4,803 open generators + paired reals. Eval is held out |
+| **OpenFake (selected)** | mixed | 0.16 | the 30 frontier/community generators this detector measurably misses + LAION/Pexels reals |
+| **GAS-Station v4 / v3** | fake | 0.10 / 0.09 | weekly open-model dumps after `wire_gasstation.py` |
+| **laion400m-1** | real | 0.09 | `jp1924/Laion400m-1` images in parquet (not a URL scrape) |
+| **Open Images V7** | real | 0.09 | validation + test photographs |
 | **FLUX-Reason-6M** | fake | 0.05 | 5.9M FLUX.1-dev; streamed |
-| **Frontier fakes** | fake | 0.08 | Midjourney / DALL-E / SD / Nano Banana Pro (label inverted) |
-| **SID_Set** | fake | 0.06 | full-synthetic only (drop real + tampered) |
+| **Frontier fakes** | fake | 0.05 | Midjourney / DALL-E / SD / Nano Banana Pro (label inverted) |
+| **SID_Set** | fake | 0.05 | full-synthetic only (drop real + tampered) |
 
 Roots: `$SEER_DATA_ROOT` (defaults to `/workspace/data` when that mount
 exists, else `F:/techjam`). Local parquet is read in streaming mode.
+
+### Choosing generators by measured difficulty, not by name
+
+OpenFake is 3.44 TB over 645 shards and every shard interleaves all ~80 of
+its generators, so it cannot be fetched selectively by file. More
+importantly, most of it is not worth fetching: a generator this detector
+already catches at 99% recall under JPEG 30 adds cost, not signal. So the
+selection is measured rather than guessed —
+
+```bash
+uv run scripts/openfake.py probe --shards 3            # per-generator sample
+uv run scripts/openfake_rank.py --checkpoint runs/seer_vitl/best.pt
+uv run scripts/openfake.py fetch --from-rank /workspace/data/openfake/rank.json \
+    --labels fake real --cap-model pexels=40000 laion=25000
+```
+
+`openfake_rank.py` scores every generator clean and under the eval-table
+perturbations; `fetch --from-rank` then pulls **inversely to recall** (8k
+images below 0.70 recall, 5k below 0.95, 2.5k below 0.98, nothing above).
+On the step-6000 ViT-L checkpoint that selected 30 generators — worst were
+`nano-banana` at 0.20 recall / 0.70 AUROC, `qwen-image` 0.41,
+`flux-1.1-pro` 0.64, `sd-3.5` 0.68, with `ideogram-3.0` at 0.85 and
+`flux.2-klein-4b` at 0.98 — and skipped the ~29 it already saturates.
+`tiny-random-sana` is excluded on purpose: it is a HuggingFace test stub
+emitting uniform RGB noise, and our augmentation puts noise on *real*
+images. OpenFake's `core/test` and `reddit/test` are held out (below).
 
 ## Setup
 
@@ -110,6 +137,9 @@ uv run scripts/fetch_data.py flux-reason-6m --max-shards 8 # optional; full dump
 uv run scripts/fetch_data.py sid-set --max-shards 16
 uv run scripts/wire_gasstation.py --versions v3 v4        # unpack GAS-Station tarballs
 uv run scripts/download_laion400m.py --max-shards 12 --max-images 150000 --min-side 512
+uv run scripts/openfake.py probe --shards 3               # then rank + fetch, see above
+uv run scripts/openfake.py holdout --config core          # held-out OOD eval
+uv run scripts/openfake.py holdout --config reddit        # held-out in-the-wild eval
 uv run scripts/download_open_images.py --workers 32 --max-gb 70
 
 # 4. full training (hero config = the mixture above)
@@ -128,6 +158,8 @@ uv run python main.py eval --checkpoint runs/seer_vitl/best.pt --dataset comfor_
 uv run python main.py eval --checkpoint runs/seer_vitl/best.pt --dataset comfor_eval --augmented   # 1024px + JPEG q50
 uv run python main.py eval --checkpoint runs/seer_vitl/best.pt --dataset ntire_val
 uv run python main.py eval --checkpoint runs/seer_vitl/best.pt --dataset ntire_test   # HF public test (2.5k)
+uv run python main.py eval --checkpoint runs/seer_vitl/best.pt --dataset openfake_test    # unseen gens AND unseen reals
+uv run python main.py eval --checkpoint runs/seer_vitl/best.pt --dataset openfake_reddit  # in the wild
 uv run python main.py eval --checkpoint runs/seer_vitl/best.pt --dataset folders \
     --real-dir data/wikiart --out-json wikiart_fpr.json                   # FPR eval
 
@@ -256,8 +288,16 @@ checkpoints therefore produce heatmaps too.
   2.5k public test from
   [`deepfakesMSU/NTIRE-RobustAIGenDetection-test-public`](https://huggingface.co/datasets/deepfakesMSU/NTIRE-RobustAIGenDetection-test-public)
   (clean vs distorted + per-distortion). The 512 recipe also scores it
-  every `eval_every` steps (`eval_datasets: [ntire_test]`); `best.pt`
-  still follows the train-distribution val slice.
+  every `eval_every` steps (`eval_datasets: [ntire_test, openfake_test]`);
+  `best.pt` still follows the train-distribution val slice.
+- **OpenFake held-out** — `--dataset openfake_test` / `openfake_reddit`
+  after `scripts/openfake.py holdout`. `openfake_test` shifts generators
+  *and* real sources at once (`gpt-image-1.5/2`, `nano-banana-pro`,
+  `flux.2-klein-9b`, `midjourney-7`, `ideogram-2.0`, `recraft-v2/v3`,
+  `sora-2`, `veo-3` against DOCCI + ImageNet reals), which is stricter than
+  holding generators out alone; `openfake_reddit` is naturally circulated
+  content with unknown provenance. Neither can reach training: the loader
+  refuses any path under `openfake/holdout_*`. Both report per generator.
 - **FPR sets** — real-only folders (WikiArt etc.).
 - Metrics: macro (balanced) accuracy, mAP (AP on fake class), AUROC, F1,
   precision/recall, FPR/FNR, plus per-architecture and (on NTIRE)

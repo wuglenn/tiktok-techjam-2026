@@ -61,6 +61,15 @@ NTIRE_EVAL = {
     "ntire_test_public": dict(split="test"),  # alias for the HF public test
 }
 
+# OpenFake's held-out splits, on disk after `scripts/openfake.py holdout`.
+# core/test shifts generators *and* real sources at once (DOCCI + ImageNet
+# reals vs the LAION + Pexels reals used for training), so it is a stricter
+# generalization measure than holding generators out alone.
+OPENFAKE_EVAL = {
+    "openfake_test": "holdout_core",
+    "openfake_reddit": "holdout_reddit",
+}
+
 _NTIRE_SAMPLE_CACHE: dict = {}
 
 
@@ -229,10 +238,29 @@ def _chunked(ds, batch_size: int, max_samples: Optional[int] = None):
 
 
 def known_eval_datasets() -> list:
-    return list(EVAL_SPECS) + list(NTIRE_EVAL) + ["folders"]
+    return list(EVAL_SPECS) + list(NTIRE_EVAL) + list(OPENFAKE_EVAL) + ["folders"]
+
+
+def _openfake_eval_dataset(dataset: str):
+    from .paths import openfake_dir
+
+    root = openfake_dir() / OPENFAKE_EVAL[dataset]
+    # these live *at* a held-out path on purpose: reading them is the point
+    parts = [FolderDataset([str(root / cls)], label, allow_held_out=True)
+             for cls, label in (("real", 0), ("fake", 1))
+             if (root / cls).is_dir()]
+    if not parts:
+        raise FileNotFoundError(
+            f"{dataset} is not on disk under {root}. Fetch it with: "
+            f"uv run scripts/openfake.py holdout --config "
+            f"{'reddit' if dataset == 'openfake_reddit' else 'core'}"
+        )
+    return torch.utils.data.ConcatDataset(parts)
 
 
 def _build_eval_dataset(dataset, real_dirs=None, fake_dirs=None):
+    if dataset in OPENFAKE_EVAL:
+        return _openfake_eval_dataset(dataset)
     if dataset == "folders":
         parts = []
         if real_dirs:
@@ -269,7 +297,7 @@ def _tag_eval_sample(sample: dict, dataset: str) -> dict:
         sample.setdefault("source_type", "ntire")
     elif str(dataset).startswith("comfor"):
         sample.setdefault("source_type", "comfor")
-    elif dataset == "folders":
+    elif dataset == "folders" or dataset in OPENFAKE_EVAL:
         sample.setdefault("source_type", "folders")
     return sample
 
@@ -317,7 +345,10 @@ def _single_pass(model, cfg_dict, perturbation: Optional[str], augmented: bool,
         y_list = [int(s["label"]) for s in chunk]
         probs.extend(p_list)
         labels.extend(y_list)
-        archs.extend(s.get("architecture", "") for s in chunk)
+        # folder sources carry no architecture, but their parent directory is
+        # the generator - that is what makes the OpenFake holdout readable
+        # per generator instead of collapsing into one bucket
+        archs.extend(s.get("architecture") or s.get("generator") or "" for s in chunk)
         distorted.extend("distorted" if s.get("is_distorted") else "clean" for s in chunk)
         dist_keys.extend(_distortion_key(s) for s in chunk)
         if dump_dir and misclass_max:

@@ -25,6 +25,7 @@ bf16: true
 grad_checkpointing: false
 ema_decay: 0.999
 eval_every: 2000
+eval_datasets: [ntire_test, openfake_test]
 log_every: 10
 heatmap_every: 50
 heatmap_n: 4
@@ -52,7 +53,7 @@ data:
       split: train
       local_dirs: [/workspace/data/commfor-small]
       shuffle_buffer: 1024
-      weight: 0.26            # ~19% of fake mass + 0.13 reals (was 0.35)
+      weight: 0.22            # ~22% of fake mass + its paired reals
 
     - name: flux-reason
       type: hf
@@ -73,7 +74,8 @@ data:
       keep_label: 1
       local_dirs: [/workspace/data/frontier-fakes]
       shuffle_buffer: 256
-      weight: 0.08            # frontier commercial; capped by ~5k train fakes
+      weight: 0.05            # only ~5k train fakes; openfake now carries
+                              # the frontier-commercial load with 130k unique
 
     - name: sid-set
       type: hf
@@ -86,33 +88,41 @@ data:
       keep_label: 1
       local_dirs: [/workspace/data/sid-set]
       shuffle_buffer: 512
-      weight: 0.06            # untagged, older-skew generators
+      weight: 0.05            # untagged, older-skew generators
 
     - name: ntire
       type: ntire
       split: train
       shard: -1
-      weight: 0.30              # most recent curated set; 42 gens 2022-2026 + matched reals
+      weight: 0.28              # most recent curated set; 42 gens 2022-2026 + matched reals
 
     - name: gs-images-v3
       type: folders             # run: scripts/wire_gasstation.py
       fake_dirs: [/workspace/data/gs-images-v3/wired/images.txt]
-      weight: 0.10              # recent open-model dumps
+      weight: 0.09              # recent open-model dumps
 
     - name: gs-images-v4
       type: folders
       fake_dirs: [/workspace/data/gs-images-v4/wired/images.txt]
-      weight: 0.11              # latest weekly dumps - highest recency
+      weight: 0.10              # latest weekly dumps - highest recency
+
+    - name: openfake
+      type: folders             # run: scripts/openfake.py fetch --from-rank ...
+      # ONLY openfake/train. core/test and reddit/test are held out and the
+      # loader refuses any path under openfake/holdout_*.
+      fake_dirs: [/workspace/data/openfake/train/fake]
+      real_dirs: [/workspace/data/openfake/train/real]
+      weight: 0.16              # 30 generators picked by measured recall
 
     - name: laion400m-1
       type: folders
       real_dirs: [/workspace/data/laion400m-1/real]
-      weight: 0.10
+      weight: 0.09
 
     - name: open-images-v7
       type: folders             # scripts/download_open_images.py (val + test)
       real_dirs: [/workspace/data/open-images-v7]
-      weight: 0.10
+      weight: 0.09
 
 augment:
   jpeg_prob: 0.75

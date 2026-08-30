@@ -12,22 +12,31 @@
 #   * sid-set       - SID_Set full-synthetic only (drop reals and tampered)
 #   * ntire         - NTIRE 2026 train, all 6 shards (42 gens, matched reals)
 #   * gs-images-v3/v4 - GAS-Station dumps after scripts/wire_gasstation.py
+#   * openfake      - the 30 OpenFake generators this detector actually
+#                     misses, plus its LAION/Pexels reals
 #   * laion400m-1   - jp1924/Laion400m-1 hosted images (min side >512)
 #   * open-images-v7 - Open Images V7 validation+test reals
 #
-# Weights are relative sampling probabilities, tuned for two goals:
+# Weights are relative sampling probabilities, tuned for three goals:
 #   1. recency - the most recent fake sources carry the most fake mass:
-#      ntire (42 gens 2022-2026, ~22% of fake draws), the GAS-Station
-#      weekly dumps (v3 ~15% / v4 ~16%) and frontier-fakes incl. Nano
-#      Banana Pro (~12%, capped by its tiny ~5k-image train split).
-#   2. balance - no fake source above ~22% of the fake class. comfor
-#      fakes (SD-derivative heavy, older skew) stay ~19% but keep
-#      enough weight to preserve the 4,803-generator diversity that
-#      drives unseen-generator generalization, plus its 278k paired
-#      reals; sid-set (~9%) has untagged, mostly older generators;
-#      flux-reason (~7%) is a single FLUX.1-dev family.
-# Real mass comes from comfor, ntire, laion400m-1, and open-images-v7.
-# `balance_labels` then draws real/fake 50/50; weights apply within class.
+#      ntire (42 gens 2022-2026, ~28% of fake draws), openfake (~16%,
+#      frontier commercial APIs through 2026), and the GAS-Station
+#      weekly dumps (v3 ~9% / v4 ~10%).
+#   2. measured difficulty - openfake's share is spent on generators a
+#      trained checkpoint demonstrably misses, not on breadth for its own
+#      sake. scripts/openfake_rank.py scores every OpenFake generator and
+#      scripts/openfake.py fetches inversely to recall, so nano-banana
+#      (0.20 recall) and qwen-image (0.41) arrive with 8k images each while
+#      anything already caught above 98% is not fetched at all.
+#   3. balance - no source above ~25% of a class. comfor fakes
+#      (SD-derivative heavy, older skew) hold ~22% to preserve the
+#      4,803-generator diversity that drives unseen-generator
+#      generalization, plus its paired reals; frontier-fakes drops to ~5%
+#      because openfake covers the same commercial families with 130k
+#      unique images instead of a ~5k pool repeated ~27 times.
+# Real mass comes from comfor, ntire, openfake, laion400m-1 and
+# open-images-v7. `balance_labels` then draws real/fake 50/50; weights
+# apply within class.
 
 # Gated: request access on the model page, then `hf auth login`.
 backbone: facebook/dinov3-vitl16-pretrain-lvd1689m
@@ -47,7 +56,10 @@ bf16: true
 grad_checkpointing: false  # not needed on big GPUs
 ema_decay: 0.999
 eval_every: 2000
-eval_datasets: [ntire_test]   # HF deepfakesMSU/NTIRE-RobustAIGenDetection-test-public
+# ntire_test: HF deepfakesMSU/NTIRE-RobustAIGenDetection-test-public.
+# openfake_test: OpenFake core/test - generators AND real sources both unseen
+# (scripts/openfake.py holdout). Skipped with a log line until it is on disk.
+eval_datasets: [ntire_test, openfake_test]
 log_every: 50
 heatmap_every: 50
 heatmap_n: 4
@@ -67,7 +79,7 @@ data:
       split: train
       local_dirs: [/workspace/data/commfor-small]
       shuffle_buffer: 8192
-      weight: 0.26            # ~19% of fake mass + 0.13 reals (was 0.35)
+      weight: 0.22            # ~22% of fake mass + its paired reals
 
     - name: flux-reason
       type: hf
@@ -89,7 +101,8 @@ data:
       keep_label: 1            # fake images only
       local_dirs: [/workspace/data/frontier-fakes]
       shuffle_buffer: 1024
-      weight: 0.08            # frontier commercial; capped by ~5k train fakes
+      weight: 0.05            # only ~5k train fakes; openfake now carries
+                              # the frontier-commercial load with 130k unique
 
     - name: sid-set
       type: hf
@@ -102,33 +115,45 @@ data:
       keep_label: 1
       local_dirs: [/workspace/data/sid-set]
       shuffle_buffer: 2048
-      weight: 0.06            # untagged, older-skew generators
+      weight: 0.05            # untagged, older-skew generators
 
     - name: ntire
       type: ntire
       split: train
       shard: -1                 # all 6 distribution-matched shards
-      weight: 0.30              # most recent curated set; 42 gens 2022-2026 + matched reals
+      weight: 0.28              # most recent curated set; 42 gens 2022-2026 + matched reals
 
     - name: gs-images-v3
       type: folders             # run: scripts/wire_gasstation.py
       fake_dirs: [/workspace/data/gs-images-v3/wired/images.txt]
-      weight: 0.10              # recent open-model dumps
+      weight: 0.09              # recent open-model dumps
 
     - name: gs-images-v4
       type: folders
       fake_dirs: [/workspace/data/gs-images-v4/wired/images.txt]
-      weight: 0.11              # latest weekly dumps - highest recency
+      weight: 0.10              # latest weekly dumps - highest recency
+
+    - name: openfake
+      type: folders             # run: scripts/openfake.py fetch --from-rank ...
+      # ONLY openfake/train. core/test and reddit/test are held out and the
+      # loader refuses any path under openfake/holdout_*.
+      fake_dirs: [/workspace/data/openfake/train/fake]
+      real_dirs: [/workspace/data/openfake/train/real]
+      weight: 0.16              # ~16% of fake mass: 30 generators selected by
+                                # measured recall, incl. nano-banana,
+                                # qwen-image, ideogram-3.0, flux.2-klein-4b.
+                                # Reals are LAION+Pexels (news / clean stock),
+                                # where this detector's FPR was ~6-9%.
 
     - name: laion400m-1
       type: folders             # jp1924/Laion400m-1; scripts/download_laion400m.py
       real_dirs: [/workspace/data/laion400m-1/real]
-      weight: 0.10
+      weight: 0.09
 
     - name: open-images-v7
       type: folders             # scripts/download_open_images.py (val + test)
       real_dirs: [/workspace/data/open-images-v7]
-      weight: 0.10
+      weight: 0.09
 
 augment:
   # Train harder than the eval table (NTIRE 2026 / arxiv:2604.11487).

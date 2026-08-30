@@ -95,6 +95,13 @@ def test_train_configs_exclude_held_out_sets():
     assert not is_held_out_train_ref("/workspace/data/open-images-v7/validation/abc.jpg")
     assert not is_held_out_train_ref("/workspace/data/frontier-fakes")
 
+    # OpenFake: only core/train may be trained on
+    assert is_held_out_train_ref("/workspace/data/openfake/holdout_core/fake/nano-banana-pro/a.jpg")
+    assert is_held_out_train_ref("/workspace/data/openfake/holdout_reddit/real/reddit/a.jpg")
+    assert is_held_out_train_ref(r"F:\techjam\openfake\holdout_core\fake\x.jpg")
+    assert not is_held_out_train_ref("/workspace/data/openfake/train/fake/nano-banana/a.jpg")
+    assert not is_held_out_train_ref("/workspace/data/openfake/train/real/pexels/a.jpg")
+
     try:
         assert_not_held_out_train(spec=SourceSpec(
             name="coco", type="folders", real_dirs=["/workspace/data/coco-val2017"],
@@ -140,7 +147,7 @@ def test_hero_config_keeps_only_frontier_fakes():
     assert normalize_label(0, sid.label_map) == 0
     ntire = by_name["ntire"]
     assert ntire.type == "ntire" and ntire.split == "train" and ntire.shard == -1
-    assert cfg.eval_datasets == ["ntire_test"]
+    assert cfg.eval_datasets == ["ntire_test", "openfake_test"]
     gs3 = by_name["gs-images-v3"]
     assert gs3.type == "folders" and gs3.fake_dirs
     gs4 = by_name["gs-images-v4"]

@@ -236,6 +236,33 @@ REGISTRY: tuple[DatasetSpec, ...] = (
         ),
     ),
     DatasetSpec(
+        key="openfake",
+        name="OpenFake v2 (difficulty-selected generators + reals)",
+        source="manual",
+        tier=2,
+        role="Fake+real: the frontier-generator hole. 80 generators incl. nano-banana, GPT Image, Midjourney 6/7, Ideogram, FLUX.2 Klein, plus LAION/Pexels reals.",
+        repo_id="ComplexDataLab/OpenFake",
+        approx_gb=68.0,
+        licence="cc-by-sa-4.0 (proprietary-generator subsets are non-commercial)",
+        homepage="https://huggingface.co/datasets/ComplexDataLab/OpenFake",
+        stat_columns=("label", "model", "type", "release_date"),
+        config="core",
+        notes=(
+            "Full repo is 3.44 TB / 645 shards. NEVER snapshot it.",
+            "Every shard interleaves all ~80 generators, so neither file "
+            "selection nor row-group pushdown isolates a model: "
+            "scripts/openfake.py streams shards and filters on `model`.",
+            "Fetch inversely to measured recall: scripts/openfake_rank.py "
+            "scores the generators, `fetch --from-rank` sizes the pull.",
+            "Skip tiny-random-sana: a HF test stub that emits RGB noise.",
+            "core/test (OOD generators + OOD reals) and reddit/test "
+            "(in-the-wild) are HELD OUT: --dataset openfake_test / "
+            "openfake_reddit.",
+            "Known upstream bug: `prompt` is misaligned for 5 generators. "
+            "Irrelevant here - we use image, label and model only.",
+        ),
+    ),
+    DatasetSpec(
         key="mirage",
         name="MIRAGE",
         source="hf_files",

@@ -72,7 +72,19 @@ _DEMO_VAL_MARKERS = (
     "diffusion_based/dalle",
 )
 
-_HELD_OUT_TRAIN_MARKERS = _COMFOR_EVAL_MARKERS + _DEMO_VAL_MARKERS
+# OpenFake's own held-out splits: core/test is OOD generators paired with OOD
+# reals, reddit/test is in-the-wild. scripts/openfake.py writes them under
+# openfake/holdout_*, and only openfake/train may enter the mixture.
+_OPENFAKE_EVAL_MARKERS = (
+    "openfake/holdout",
+    "openfake-holdout",
+    "openfake/core/test",
+    "openfake/reddit/test",
+)
+
+_HELD_OUT_TRAIN_MARKERS = (
+    _COMFOR_EVAL_MARKERS + _DEMO_VAL_MARKERS + _OPENFAKE_EVAL_MARKERS
+)
 
 
 def _natural_key(s: str):
@@ -431,9 +443,14 @@ def _shard(it: Iterator, num: int, index: int) -> Iterator:
 
 class FolderDataset(torch.utils.data.Dataset):
     """Images on disk. `roots` may be a dir (scanned recursively) or a file
-    listing image paths (one per line)."""
+    listing image paths (one per line).
 
-    def __init__(self, roots: List[str], label: int):
+    Held-out paths are dropped by default, which is what keeps a stray
+    ``--fake-dir`` out of training. Eval sets that *live* at a held-out path
+    (the OpenFake test splits) must opt in with ``allow_held_out=True``.
+    """
+
+    def __init__(self, roots: List[str], label: int, allow_held_out: bool = False):
         super().__init__()
         self.files: List[str] = []
         for root in roots or []:
@@ -446,7 +463,8 @@ class FolderDataset(torch.utils.data.Dataset):
                     for fn in filenames:
                         if Path(fn).suffix.lower() in IMAGE_EXTS:
                             self.files.append(str(Path(dirpath) / fn))
-        self.files = [f for f in self.files if not is_held_out_train_ref(f)]
+        if not allow_held_out:
+            self.files = [f for f in self.files if not is_held_out_train_ref(f)]
         if not self.files:
             raise FileNotFoundError(f"No images found under {list(roots or [])}")
         self.label = label
@@ -610,6 +628,13 @@ def _held_out_train_reason(blob: str) -> str:
             "Community Forensics Eval is held-out. Do not train on "
             "OwensLab/CommunityForensics-Eval or local_dirs under comfor-eval. "
             "Use CommunityForensics-Small for training and --dataset comfor_eval for eval."
+        )
+    if any(m in blob for m in _OPENFAKE_EVAL_MARKERS):
+        return (
+            "The OpenFake test splits are held-out: core/test is unseen "
+            "generators paired with unseen real sources, reddit/test is "
+            "in-the-wild. Train on openfake/train (scripts/openfake.py fetch) "
+            "and evaluate with --dataset openfake_test / openfake_reddit."
         )
     return (
         "The organisers' demonstration val is held-out (COCO val2017 reals, "
