@@ -155,9 +155,10 @@ class CompositeConfig:
 
     Overlays are crops of the source (own scale / aspect / flip) pasted
     into random regions, and a composited sample receives a stack of
-    1..max_overlays pastes; each paste overwrites the patch labels in its
-    footprint (last layer wins). The global label is derived from what
-    remains visible: any patch fake -> fake.
+    1..max_overlays pastes; each paste Porter-Duff-overs per-pixel labels
+    with the RGB (a 40% blend is a 0.4 target), then pools to patches.
+    The page target is binary (any visible AI → fake). Already-composited
+    slots may be sources; their label maps travel with the crop.
 
     prob               - chance a fake sample is composited (one of the
                          three label-1 pairings above)
@@ -261,6 +262,7 @@ class TrainConfig:
     prefetch_depth: int = 2  # collated batches queued ahead of the GPU
     heatmap_every: int = 0  # dump predicted heatmaps; 0 = off
     heatmap_n: int = 4  # rows in the joint heatmap grid
+    ckpt_every: int = 500  # write last.pt between evals; 0 = only at eval_every
 
     data: DataConfig = field(default_factory=DataConfig)
     augment: AugmentConfig = field(default_factory=AugmentConfig)

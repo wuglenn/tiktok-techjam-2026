@@ -50,6 +50,7 @@ eval_datasets: [ntire_test]   # HF deepfakesMSU/NTIRE-RobustAIGenDetection-test-
 log_every: 50
 heatmap_every: 50
 heatmap_n: 4
+ckpt_every: 500             # last.pt between evals (cgroup RAM can SIGKILL this job)
 out_dir: runs/seer_vitl
 
 data:

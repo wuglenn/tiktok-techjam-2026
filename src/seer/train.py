@@ -469,6 +469,19 @@ def run(cfg: TrainConfig):
                 if was_training:
                     model.train()
 
+        if (
+            getattr(cfg, "ckpt_every", 0)
+            and n_done % int(cfg.ckpt_every) == 0
+            and n_done % max(1, int(cfg.eval_every)) != 0
+            and n_done != total_steps
+        ):
+            save_checkpoint(
+                os.path.join(cfg.out_dir, "last.pt"),
+                model, cfg, n_done, optimizer, scheduler, ema,
+                {"step": n_done},
+            )
+            _log(f"[ckpt] {os.path.join(cfg.out_dir, 'last.pt')} step={n_done}")
+
         # ------------------------------------------------------- evaluation
         if (step + 1) % cfg.eval_every == 0 or (step + 1) == total_steps:
             was_training = model.training

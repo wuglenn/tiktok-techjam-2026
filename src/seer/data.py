@@ -803,47 +803,48 @@ class BatchBuilder:
                           align_corners=False)[0, 0].clamp(0.0, 1.0)
         return a * self.rng.uniform(0.75, 1.0)
 
-    def _crop_for(self, src, ph, pw):
-        """A crop of `src` resampled to (ph, pw).
-
-        Overlays are crops of the source image - independent scale, aspect
-        and flip - not co-registered full frames, so layering carries the
-        resampling and content mismatch of a real edit.
-        """
-        _, H, W = src.shape
+    def _crop_geom(self, H, W, ph, pw):
+        """Crop box + flip for an overlay, shared by pixels and label maps."""
         ch = max(8, min(H, int(round(ph * self.rng.uniform(0.5, 2.0)))))
         cw = max(8, min(W, int(round(pw * self.rng.uniform(0.5, 2.0)))))
         y0 = self.rng.randint(0, H - ch)
         x0 = self.rng.randint(0, W - cw)
-        crop = src[:, y0:y0 + ch, x0:x0 + cw]
+        return y0, x0, ch, cw, self.rng.random() < 0.5
+
+    def _resample_crop(self, src, y0, x0, ch, cw, flip, ph, pw):
+        """Apply one overlay crop. `src` is (C, H, W) — RGB or a 1-channel label."""
+        crop = src[..., y0:y0 + ch, x0:x0 + cw]
         if (ch, cw) != (ph, pw):
-            crop = F.interpolate(crop[None], size=(ph, pw), mode="bilinear",
-                                 align_corners=False, antialias=True)[0]
-        if self.rng.random() < 0.5:
-            crop = torch.flip(crop, dims=[2])
+            crop = F.interpolate(
+                crop[None], size=(ph, pw), mode="bilinear",
+                align_corners=False, antialias=True,
+            )[0]
+        if flip:
+            crop = torch.flip(crop, dims=[-1])
         return crop
 
-    def _paste(self, img, src):
-        """Layer one cropped region of `src` over `img`, in place.
+    def _paste(self, img, src_img, lab, src_lab):
+        """Layer a crop of `src_img` / `src_lab` over `img` / `lab` in place.
 
-        Returns the paste's grid-space footprint (patch-label bookkeeping).
+        Labels travel with the same crop, scale and flip as the pixels, then
+        Porter-Duff over: both the RGB and the per-pixel fake-ness.
         """
         y0, x0, h, w = self._rand_rect()
         mode = self._pick_mode()
         c = self.res // self.G
         alpha = self._region_alpha((y0, x0, h, w), mode)
-        # paste window: region plus the alpha's edge bleed, clipped to bounds
         margin = 2 * c if mode == "blend" else 2
         py, px, ph, pw = y0 * c, x0 * c, h * c, w * c
         wy0, wx0 = max(0, py - margin), max(0, px - margin)
         wy1 = min(self.res, py + ph + margin)
         wx1 = min(self.res, px + pw + margin)
-        crop = self._crop_for(src, wy1 - wy0, wx1 - wx0)
+        _, H, W = src_img.shape
+        geom = self._crop_geom(H, W, wy1 - wy0, wx1 - wx0)
+        crop = self._resample_crop(src_img, *geom, wy1 - wy0, wx1 - wx0)
+        lab_crop = self._resample_crop(src_lab, *geom, wy1 - wy0, wx1 - wx0)
         a = alpha[wy0:wy1, wx0:wx1]
         img[:, wy0:wy1, wx0:wx1] = img[:, wy0:wy1, wx0:wx1] * (1.0 - a) + crop * a
-        foot = torch.zeros(self.G, self.G)
-        foot[y0:y0 + h, x0:x0 + w] = 1.0
-        return foot
+        lab[:, wy0:wy1, wx0:wx1] = lab[:, wy0:wy1, wx0:wx1] * (1.0 - a) + lab_crop * a
 
     def _apply_composites(self, images, labels, patch_labels):
         """Layer cropped overlays over base images (composite training).
@@ -856,37 +857,44 @@ class BatchBuilder:
           real_on_real  label stays 0: blending alone is not a fake cue
         Each composited sample gets n ~ Uniform{1,...,k} pastes
         (k = max_overlays) with independent regions, scales and modes.
-        Every paste overwrites the patch labels in its footprint (last
-        layer wins), and the global label follows what is actually visible.
+
+        Per-pixel fake-ness is alpha-composited with the RGB (a 40% blend
+        is a 0.4 target), then average-pooled to the patch grid. The page
+        target stays binary: any visible AI → fake. Later overlays may
+        read already-composited slots; their label maps travel with them.
         """
         B = images.shape[0]
         comp = self.comp
         if comp is None:
             return images, labels, patch_labels
-        pool = images.clone()  # pristine sources: composites never feed composites
-        orig = labels.clone()  # pristine classes of the pool
+        orig = labels.clone()
         by_cls = {c: [j for j in range(B) if float(orig[j]) == c] for c in (0.0, 1.0)}
+        H, W = int(images.shape[-2]), int(images.shape[-1])
+        pixel_lab = orig.view(B, 1, 1, 1).expand(B, 1, H, W).clone()
+        cell = self.res // self.G
 
         def pick(cls):
             cands = by_cls[cls]
             return self.rng.choice(cands) if cands else None
 
         def stack(i, base, first_src):
-            """`base` content + n ~ Uniform{1,...,k} pastes of `first_src`'s class."""
-            img = pool[base].clone()
-            pl = torch.full((self.G, self.G), float(orig[base]))
-            src = first_src
+            """`base` (current pixels/labels) + n pastes; first from `first_src`."""
+            src_img = images[first_src].clone()
+            src_lab = pixel_lab[first_src].clone()
+            if i != base:
+                images[i] = images[base].clone()
+                pixel_lab[i] = pixel_lab[base].clone()
             k = max(1, int(comp.max_overlays))
-            for _ in range(self.rng.randint(1, k)):
-                if src is None:
+            for n in range(self.rng.randint(1, k)):
+                if n > 0:
                     src = pick(float(orig[first_src]))
                     if src is None:
                         break
-                pl[self._paste(img, pool[src]) > 0.5] = float(orig[src])
-                src = None
-            images[i] = img
+                    src_img, src_lab = images[src], pixel_lab[src]
+                self._paste(images[i], src_img, pixel_lab[i], src_lab)
+            pl = F.avg_pool2d(pixel_lab[i][None], cell, stride=cell)[0, 0].clamp(0.0, 1.0)
             patch_labels[i] = pl.flatten()
-            labels[i] = pl.max()  # any visible AI patch -> fake
+            labels[i] = 1.0 if float(pl.max()) > 0.0 else 0.0
 
         for i in range(B):
             if float(orig[i]) > 0.5 and self.rng.random() < comp.prob:

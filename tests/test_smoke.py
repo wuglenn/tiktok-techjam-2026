@@ -126,40 +126,40 @@ def test_composite_combinations():
         return out
 
     def fake_patch_rows(batches):
-        return torch.cat([x["patch_labels"][x["labels"] == 1] for x in batches])
+        return torch.cat([x["patch_labels"][x["labels"] > 0] for x in batches])
 
-    # invariants under the default mix: binary patch labels, and the global
-    # label follows what is actually visible
+    # invariants: soft patches in [0, 1]; page is binary (any AI → fake)
     for mode in ("blend", "paste", "mixed"):
         for x in run(builder(mode=mode, real_real_fraction=1.0)):
             pl, y = x["patch_labels"], x["labels"]
-            assert ((pl == 0) | (pl == 1)).all()
-            assert torch.equal(y, pl.amax(dim=1))
+            assert ((pl >= 0) & (pl <= 1)).all()
+            assert set(y.tolist()) <= {0.0, 1.0}
+            assert torch.equal(y, (pl.amax(dim=1) > 0).float())
             assert torch.isfinite(x["images"]).all()
 
-    # fake-over-real: localized (mixed) patch labels
+    # fake-over-real: localized mixed patch labels (soft on blended cells)
     rows = fake_patch_rows(run(builder(fake_on_real=1.0, real_on_fake=0.0,
                                        fake_on_fake=0.0, max_overlays=1)))
     assert rows.shape[0] > 0
-    assert ((rows == 0).any(dim=1) & (rows == 1).any(dim=1)).all()
+    assert ((rows < 0.5).any(dim=1) & (rows > 0).any(dim=1)).all()
 
-    # real-over-fake: inverted patch labels - only the pasted region is real
+    # real-over-fake: inverted — overlay cells drop below 1
     rows = fake_patch_rows(run(builder(fake_on_real=0.0, real_on_fake=1.0,
                                        fake_on_fake=0.0, max_overlays=1)))
     assert rows.shape[0] > 0
-    assert ((rows == 0).any(dim=1) & (rows == 1).any(dim=1)).all()
+    assert ((rows < 1).any(dim=1) & (rows > 0.5).any(dim=1)).all()
 
-    # fake-over-fake: seams inside fully-fake content, all patches stay 1
+    # fake-over-fake with no FoR/RoF in the mix: patches stay 1
     rows = fake_patch_rows(run(builder(fake_on_real=0.0, real_on_fake=0.0,
                                        fake_on_fake=1.0, max_overlays=3)))
     assert rows.shape[0] > 0
-    assert (rows == 1).all()
+    assert torch.allclose(rows, torch.ones_like(rows))
 
-    # real-over-real: label stays real; blending alone is not a fake cue
+    # real-over-real: blending reals is not a fake cue
     for x in run(builder(real_real_fraction=1.0, fake_on_real=0.0,
                          real_on_fake=0.0, fake_on_fake=0.0)):
         pl, y = x["patch_labels"], x["labels"]
-        assert torch.equal(y, pl.amax(dim=1))
+        assert torch.equal(y, (pl.amax(dim=1) > 0).float())
         assert (pl[y == 0] == 0).all()
 
     # stacking: more overlays -> more pasted area on fake samples
@@ -184,6 +184,13 @@ def test_composite_combinations():
     x = b([{"image": _rand_pil(480, random.Random(22)), "label": 0,
             "generator": "g", "architecture": "LatDiff"}])
     assert x["labels"].tolist() == [0.0] and (x["patch_labels"] == 0).all()
+
+    # blend: some patch targets are strictly fractional (alpha %, not 0/1)
+    blend_rows = fake_patch_rows(run(builder(
+        mode="blend", fake_on_real=1.0, real_on_fake=0.0, fake_on_fake=0.0,
+        max_overlays=1,
+    )))
+    assert ((blend_rows > 0) & (blend_rows < 1)).any()
     print("composite combinations (4 pairings, stacked overlays) OK")
 
 
