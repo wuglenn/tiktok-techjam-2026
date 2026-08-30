@@ -197,12 +197,14 @@ def test_composite_combinations():
 def test_augment_pipeline():
     rng = random.Random(0)
     cfg = load_config().augment
-    assert {90, 70, 50, 30, 20, 10} <= set(cfg.jpeg_quality)
+    assert {90, 70, 50, 30, 20, 10, 5} <= set(cfg.jpeg_quality)
     assert {0.5, 1.0, 2.0, 4.0} <= set(cfg.blur_sigma)
     assert {0.02, 0.05, 0.10, 0.20} <= set(cfg.noise_levels)
     assert {0.5, 0.25, 0.125} <= set(cfg.downscale_levels)
     assert cfg.color_jitter >= 0.2
-    assert cfg.extra_distort_prob > 0
+    assert cfg.extra_distort_prob >= 0.50
+    assert cfg.extra_distort_max >= 4
+    assert cfg.webp_prob > 0
     img = _rand_pil(700, rng)
     t = train_transform(img, 224, rng, cfg)
     assert t.shape == (3, 224, 224)
@@ -231,6 +233,11 @@ def test_perturbations():
     assert perturbation_names("all") == list(BENCHMARK_PERTURBATIONS)
     assert "jpeg30" in BENCHMARK_PERTURBATIONS and "jpeg10" in HARD_PERTURBATIONS
     assert "crop80" in BENCHMARK_PERTURBATIONS and "blur2.0" in BENCHMARK_PERTURBATIONS
+    for name in (
+        "doublejpeg", "chroma420", "fftlp", "grain", "social", "median3",
+        "gridshift", "resample", "phase", "chroman", "perspective", "recode",
+    ):
+        assert name in HARD_PERTURBATIONS
     for name in PERTURBATIONS:
         out = apply_perturbation(img, name)
         assert isinstance(out, Image.Image)
@@ -247,6 +254,63 @@ def test_perturbations():
     c = center_crop(img, 0.8)
     assert c.size == (480, 480)
     print(f"perturbations OK ({len(PERTURBATIONS)} levels)")
+
+
+def test_fingerprint_mask_ops():
+    from seer.augment import (
+        _chroma_aberration,
+        _chroma_subsample,
+        _double_jpeg,
+        _extra_train_distort,
+        _fft_lowpass,
+        _film_grain,
+        _gamma,
+        _median,
+        _small_rotate,
+        _social_reencode,
+        _speckle,
+        _subpixel_nudge,
+        _surface_blur,
+        _unsharp,
+        _fft_phase_noise,
+        _hue_shift,
+        _jpeg_grid_shift,
+        _resample_mismatch,
+        _recode_stack,
+        _chroma_noise,
+        _perspective_nudge,
+    )
+
+    rng = random.Random(3)
+    img = _rand_pil(96, rng)
+    ops = (
+        _double_jpeg(img, 70, 35),
+        _chroma_subsample(img, 2),
+        _median(img, 3),
+        _unsharp(img),
+        _small_rotate(img, 4.0),
+        _subpixel_nudge(img, 0.8, -0.5),
+        _gamma(img, 0.7),
+        _film_grain(img, 0.04, 8, rng),
+        _chroma_aberration(img, 2),
+        _fft_lowpass(img, 0.32),
+        _social_reencode(img, rng),
+        _jpeg_grid_shift(img, 3, 5, 40),
+        _resample_mismatch(img, 0.35),
+        _surface_blur(img),
+        _fft_phase_noise(img, 0.3, 0.2, rng),
+        _hue_shift(img, 15.0),
+        _chroma_noise(img, 0.04, rng),
+        _perspective_nudge(img, 6.0, rng),
+        _speckle(img, 0.06, rng),
+        _recode_stack(img, rng),
+    )
+    for out in ops:
+        assert out.size == img.size and out.mode == "RGB"
+    for _ in range(24):
+        out = _extra_train_distort(img, rng)
+        assert out.size == img.size and out.mode == "RGB"
+    print("fingerprint-mask ops OK")
 
 
 def test_patch_pos_weight():
@@ -505,6 +569,7 @@ if __name__ == "__main__":
     test_composite_combinations()
     test_augment_pipeline()
     test_perturbations()
+    test_fingerprint_mask_ops()
     test_patch_pos_weight()
     test_metrics_and_heatmap()
     test_schedule()

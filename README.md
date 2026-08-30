@@ -66,7 +66,7 @@ weighted mix. Missing folder sources are dropped at train time, not fatal.
 | **CommunityForensics-Small** | mixed | 0.22 | 4,803 open generators + paired reals. Eval is held out |
 | **OpenFake (selected)** | mixed | 0.16 | the 30 frontier/community generators this detector measurably misses + LAION/Pexels reals |
 | **GAS-Station v4 / v3** | fake | 0.10 / 0.09 | weekly open-model dumps after `wire_gasstation.py` |
-| **laion400m-1** | real | 0.09 | `jp1924/Laion400m-1` images in parquet (not a URL scrape) |
+| **laion400m-1** | real | 0.16 | `jp1924/Laion400m-1` images in parquet (not a URL scrape) |
 | **Open Images V7** | real | 0.09 | validation + test photographs |
 | **FLUX-Reason-6M** | fake | 0.05 | 5.9M FLUX.1-dev; streamed |
 | **Frontier fakes** | fake | 0.05 | Midjourney / DALL-E / SD / Nano Banana Pro (label inverted) |
@@ -136,7 +136,7 @@ uv run scripts/fetch_data.py frontier-fakes               # MJ / DALL-E / SD / N
 uv run scripts/fetch_data.py flux-reason-6m --max-shards 8 # optional; full dump is streamed
 uv run scripts/fetch_data.py sid-set --max-shards 16
 uv run scripts/wire_gasstation.py --versions v3 v4        # unpack GAS-Station tarballs
-uv run scripts/download_laion400m.py --max-shards 12 --max-images 150000 --min-side 512
+uv run scripts/download_laion400m.py --max-shards 20 --max-images 400000 --min-side 512
 uv run scripts/openfake.py probe --shards 3               # then rank + fetch, see above
 uv run scripts/openfake.py holdout --config core          # held-out OOD eval
 uv run scripts/openfake.py holdout --config reddit        # held-out in-the-wild eval

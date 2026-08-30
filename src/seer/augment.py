@@ -21,7 +21,7 @@ from typing import Optional
 import numpy as np
 import torch
 import torch.nn.functional as F
-from PIL import Image, ImageFilter
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
@@ -93,9 +93,10 @@ def center_crop_resize(img: Image.Image, res: int, scale: float = 0.8) -> Image.
 def train_transform(img: Image.Image, res: int, rng: random.Random, cfg) -> torch.Tensor:
     """PIL -> augmented, normalized (C, res, res) float tensor.
 
-    Parameter levels cover the official eval table and go harder (NTIRE
-    2026 / arxiv:2604.11487): JPEG down to q=10, blur σ=4, noise 0.20,
-    0.125× resize, plus impulse / motion / quantize / channel-shift.
+    Parameter levels cover the official eval table and go harder: JPEG
+    down to q=5, WebP, blur σ=4, noise 0.20, 0.125× resize, plus extras
+    that wipe generator fingerprints (DCT grid-shift JPEG, resample
+    mismatch, phase noise, chroma noise, recapture warp, surface blur).
     """
     img = img.convert("RGB")
 
@@ -103,9 +104,6 @@ def train_transform(img: Image.Image, res: int, rng: random.Random, cfg) -> torc
         img = img.transpose(Image.FLIP_LEFT_RIGHT)
 
     if rng.random() < cfg.color_jitter_prob:
-        # mild brightness / contrast / saturation jitter in image space
-        from PIL import ImageEnhance
-
         j = cfg.color_jitter
         img = ImageEnhance.Brightness(img).enhance(1.0 + rng.uniform(-j, j))
         img = ImageEnhance.Contrast(img).enhance(1.0 + rng.uniform(-j, j))
@@ -134,6 +132,13 @@ def train_transform(img: Image.Image, res: int, rng: random.Random, cfg) -> torc
     if extra_p > 0 and rng.random() < extra_p:
         for _ in range(rng.randint(1, extra_n)):
             img = _extra_train_distort(img, rng)
+
+    # Occasional hue/WB after extras so color fingerprints don't survive
+    # the rest of the stack unchanged.
+    if rng.random() < 0.08:
+        img = _hue_shift(img, rng.uniform(-18.0, 18.0))
+    if rng.random() < 0.08:
+        img = _white_balance(img, rng.uniform(0.82, 1.18), rng.uniform(0.82, 1.18))
 
     t = _to_tensor(img)
 
@@ -245,13 +250,239 @@ def _pixelate(img: Image.Image, scale: float = 0.125) -> Image.Image:
     return img.resize((sw, sh), Image.NEAREST).resize((w, h), Image.NEAREST)
 
 
+def _double_jpeg(img: Image.Image, q1: int = 70, q2: int = 40) -> Image.Image:
+    """Two JPEG passes at different qualities — the usual repost path."""
+    return jpeg_recompress(jpeg_recompress(img, q1), q2)
+
+
+def _chroma_subsample(img: Image.Image, factor: int = 2) -> Image.Image:
+    """4:2:0-style chroma decimation. Kills per-channel generator traces."""
+    y, cb, cr = img.convert("YCbCr").split()
+    w, h = img.size
+    sw, sh = max(1, w // factor), max(1, h // factor)
+    cb = cb.resize((sw, sh), Image.BILINEAR).resize((w, h), Image.BILINEAR)
+    cr = cr.resize((sw, sh), Image.BILINEAR).resize((w, h), Image.BILINEAR)
+    return Image.merge("YCbCr", (y, cb, cr)).convert("RGB")
+
+
+def _median(img: Image.Image, size: int = 3) -> Image.Image:
+    k = max(3, int(size) | 1)
+    return img.filter(ImageFilter.MedianFilter(size=k))
+
+
+def _unsharp(img: Image.Image, percent: int = 150, radius: float = 1.5) -> Image.Image:
+    """Phone / social 'enhance' after compress — re-peaks frequencies."""
+    return img.filter(ImageFilter.UnsharpMask(radius=float(radius), percent=int(percent), threshold=2))
+
+
+def _small_rotate(img: Image.Image, degrees: float) -> Image.Image:
+    """Breaks grid-aligned spectral peaks from fixed upsamplers."""
+    return img.rotate(float(degrees), resample=Image.BICUBIC, expand=False)
+
+
+def _subpixel_nudge(img: Image.Image, dx: float, dy: float) -> Image.Image:
+    return img.transform(
+        img.size, Image.AFFINE, (1.0, 0.0, float(dx), 0.0, 1.0, float(dy)),
+        resample=Image.BICUBIC,
+    )
+
+
+def _gamma(img: Image.Image, gamma: float) -> Image.Image:
+    arr = np.clip(np.asarray(img, dtype=np.float32) / 255.0, 0.0, 1.0)
+    return Image.fromarray((np.power(arr, float(gamma)) * 255.0).astype(np.uint8))
+
+
+def _film_grain(img: Image.Image, sigma: float = 0.04, scale: int = 8,
+                rng: Optional[random.Random] = None) -> Image.Image:
+    """Low-frequency grain (camera ISO), not white noise."""
+    rng = rng or random
+    arr = np.asarray(img, dtype=np.float32)
+    h, w = arr.shape[:2]
+    gh, gw = max(1, h // max(1, int(scale))), max(1, w // max(1, int(scale)))
+    rs = np.random.RandomState(rng.randrange(1 << 31))
+    grain = rs.randn(gh, gw).astype(np.float32) * (float(sigma) * 255.0)
+    grain = np.array(Image.fromarray(grain, mode="F").resize((w, h), Image.BILINEAR))
+    out = np.clip(arr + grain[:, :, None], 0, 255)
+    return Image.fromarray(out.astype(np.uint8))
+
+
+def _chroma_aberration(img: Image.Image, pixels: int = 2) -> Image.Image:
+    """Opposite R/B shift — cheap lens CA, breaks channel-aligned artifacts."""
+    arr = np.array(img)
+    px = int(pixels)
+    if px:
+        arr[:, :, 0] = np.roll(arr[:, :, 0], px, axis=1)
+        arr[:, :, 2] = np.roll(arr[:, :, 2], -px, axis=1)
+    return Image.fromarray(arr)
+
+
+def _fft_lowpass(img: Image.Image, cutoff: float = 0.35) -> Image.Image:
+    """Gaussian spectral cutoff. Diffusion/GAN fingerprints live at high f."""
+    arr = np.asarray(img, dtype=np.float32)
+    h, w = arr.shape[:2]
+    yy = np.fft.fftfreq(h)[:, None]
+    xx = np.fft.rfftfreq(w)[None, :]
+    rr = np.sqrt(xx * xx + yy * yy)
+    mask = np.exp(-0.5 * (rr / max(1e-6, float(cutoff))) ** 2).astype(np.float32)
+    out = np.empty_like(arr)
+    for c in range(3):
+        f = np.fft.rfft2(arr[:, :, c])
+        out[:, :, c] = np.fft.irfft2(f * mask, s=(h, w)).real
+    return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8))
+
+
+def _social_reencode(img: Image.Image, rng: Optional[random.Random] = None) -> Image.Image:
+    """Messenger / Instagram path: 4:2:0 + harsh WebP or JPEG."""
+    rng = rng or random
+    img = _chroma_subsample(img, 2)
+    if rng.random() < 0.5:
+        return webp_recompress(img, rng.choice((20, 35, 50)))
+    return jpeg_recompress(img, rng.choice((25, 35, 45)))
+
+
+def _jpeg_grid_shift(img: Image.Image, dx: int = 3, dy: int = 2, quality: int = 40) -> Image.Image:
+    """Shift off the 8×8 DCT grid, then JPEG. Classic anti-forensics."""
+    shifted = img.transform(
+        img.size, Image.AFFINE, (1.0, 0.0, float(dx), 0.0, 1.0, float(dy)),
+        resample=Image.BICUBIC,
+    )
+    return jpeg_recompress(shifted, quality)
+
+
+def _resample_mismatch(img: Image.Image, scale: float = 0.35,
+                       down=None, up=None) -> Image.Image:
+    """Down with one kernel, up with another — the usual 'saved from Photos' path."""
+    down = down or Image.NEAREST
+    up = up or Image.BICUBIC
+    w, h = img.size
+    sw, sh = max(1, int(round(w * scale))), max(1, int(round(h * scale)))
+    return img.resize((sw, sh), down).resize((w, h), up)
+
+
+def _surface_blur(img: Image.Image, radius: float = 2.0, edge: float = 12.0) -> Image.Image:
+    """Edge-preserving smooth. Kills periodic high-f without melting structure."""
+    blur = img.filter(ImageFilter.GaussianBlur(float(radius)))
+    a = np.asarray(img, dtype=np.float32)
+    b = np.asarray(blur, dtype=np.float32)
+    mag = np.mean(np.abs(a - b), axis=2, keepdims=True)
+    w = 1.0 / (1.0 + mag / max(1e-3, float(edge)))
+    out = b * w + a * (1.0 - w)
+    return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8))
+
+
+def _fft_phase_noise(img: Image.Image, amount: float = 0.35, cutoff: float = 0.18,
+                     rng: Optional[random.Random] = None) -> Image.Image:
+    """Jitter high-frequency phase. GAN/diffusion peaks live in the spectrum."""
+    rng = rng or random
+    arr = np.asarray(img, dtype=np.float32)
+    h, w = arr.shape[:2]
+    yy = np.fft.fftfreq(h)[:, None]
+    xx = np.fft.rfftfreq(w)[None, :]
+    high = (np.sqrt(xx * xx + yy * yy) > float(cutoff)).astype(np.float32)
+    rs = np.random.RandomState(rng.randrange(1 << 31))
+    out = np.empty_like(arr)
+    for c in range(3):
+        f = np.fft.rfft2(arr[:, :, c])
+        noise = (rs.randn(*f.shape) + 1j * rs.randn(*f.shape)).astype(np.complex64)
+        f = f * np.exp(1j * float(amount) * high * np.angle(noise + 1e-8))
+        out[:, :, c] = np.fft.irfft2(f, s=(h, w)).real
+    return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8))
+
+
+def _hue_shift(img: Image.Image, degrees: float) -> Image.Image:
+    hsv = np.asarray(img.convert("HSV"), dtype=np.int16)
+    hsv[:, :, 0] = (hsv[:, :, 0] + int(round(float(degrees) * 255.0 / 360.0))) % 256
+    return Image.fromarray(hsv.astype(np.uint8), mode="HSV").convert("RGB")
+
+
+def _white_balance(img: Image.Image, r_gain: float = 1.1, b_gain: float = 0.9) -> Image.Image:
+    arr = np.asarray(img, dtype=np.float32)
+    arr[:, :, 0] *= float(r_gain)
+    arr[:, :, 2] *= float(b_gain)
+    return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8))
+
+
+def _chroma_noise(img: Image.Image, sigma: float = 0.04,
+                  rng: Optional[random.Random] = None) -> Image.Image:
+    """Camera-ISO-like noise on chroma only. Leaves luma fingerprints less intact."""
+    rng = rng or random
+    y, cb, cr = img.convert("YCbCr").split()
+    rs = np.random.RandomState(rng.randrange(1 << 31))
+    def _n(ch):
+        a = np.asarray(ch, dtype=np.float32)
+        a = np.clip(a + rs.randn(*a.shape).astype(np.float32) * (float(sigma) * 255.0), 0, 255)
+        return Image.fromarray(a.astype(np.uint8))
+    return Image.merge("YCbCr", (y, _n(cb), _n(cr))).convert("RGB")
+
+
+def _vignette(img: Image.Image, strength: float = 0.35) -> Image.Image:
+    arr = np.asarray(img, dtype=np.float32)
+    h, w = arr.shape[:2]
+    yy = (np.linspace(-1.0, 1.0, h, dtype=np.float32))[:, None]
+    xx = (np.linspace(-1.0, 1.0, w, dtype=np.float32))[None, :]
+    fall = np.clip(1.0 - float(strength) * (xx * xx + yy * yy), 0.25, 1.0)
+    return Image.fromarray(np.clip(arr * fall[:, :, None], 0, 255).astype(np.uint8))
+
+
+def _perspective_nudge(img: Image.Image, pixels: float = 8.0,
+                       rng: Optional[random.Random] = None) -> Image.Image:
+    """Tiny homography — phone recapture / screenshot of a screen."""
+    rng = rng or random
+    w, h = img.size
+    p = float(pixels)
+    src = [(0, 0), (w, 0), (w, h), (0, h)]
+    dst = [(x + rng.uniform(-p, p), y + rng.uniform(-p, p)) for x, y in src]
+    coeffs = _perspective_coeffs(src, dst)
+    return img.transform(img.size, Image.PERSPECTIVE, coeffs, resample=Image.BICUBIC)
+
+
+def _perspective_coeffs(src, dst):
+    matrix = []
+    for (x, y), (u, v) in zip(dst, src):
+        matrix.append([x, y, 1, 0, 0, 0, -u * x, -u * y])
+        matrix.append([0, 0, 0, x, y, 1, -v * x, -v * y])
+    a = np.asarray(matrix, dtype=np.float64)
+    b = np.asarray([c for xy in src for c in xy], dtype=np.float64)
+    try:
+        coeffs, *_ = np.linalg.lstsq(a, b, rcond=None)
+    except np.linalg.LinAlgError:
+        return (1, 0, 0, 0, 1, 0, 0, 0)
+    return tuple(float(x) for x in coeffs)
+
+
+def _speckle(img: Image.Image, sigma: float = 0.08,
+             rng: Optional[random.Random] = None) -> Image.Image:
+    rng = rng or random
+    arr = np.asarray(img, dtype=np.float32) / 255.0
+    rs = np.random.RandomState(rng.randrange(1 << 31))
+    arr = np.clip(arr * (1.0 + rs.randn(*arr.shape).astype(np.float32) * float(sigma)), 0, 1)
+    return Image.fromarray((arr * 255.0).astype(np.uint8))
+
+
+def _recode_stack(img: Image.Image, rng: Optional[random.Random] = None) -> Image.Image:
+    """WhatsApp then Photos then Twitter: JPEG → WebP → JPEG at mixed Q."""
+    rng = rng or random
+    img = jpeg_recompress(img, rng.choice((80, 65, 50)))
+    img = webp_recompress(img, rng.choice((55, 40, 25)))
+    return jpeg_recompress(img, rng.choice((45, 30, 20)))
+
+
 def _extra_train_distort(img: Image.Image, rng: random.Random) -> Image.Image:
-    """One NTIRE-style op harder than the Pangram eval table."""
+    """One op harder than the Pangram table, aimed at hiding generator cues."""
     kind = rng.choice((
-        "jpeg", "blur", "impulse", "quantize", "motion", "shift", "pixelate", "bright",
+        "jpeg", "doublejpeg", "webp", "blur", "impulse", "quantize", "motion",
+        "shift", "pixelate", "bright", "chroma", "median", "unsharp", "rotate",
+        "nudge", "gamma", "grain", "aberr", "fftlp", "autocontrast",
+        "posterize", "social", "gridshift", "resample", "surface", "phase",
+        "hue", "wb", "chroman", "equalize", "vignette", "perspective",
+        "speckle", "recode",
     ))
     if kind == "jpeg":
-        return jpeg_recompress(img, rng.choice((20, 10)))
+        return jpeg_recompress(img, rng.choice((20, 10, 5)))
+    if kind == "doublejpeg":
+        return _double_jpeg(img, rng.choice((85, 70, 55)), rng.choice((45, 30, 15)))
+    if kind == "webp":
+        return webp_recompress(img, rng.choice((20, 35, 55)))
     if kind == "blur":
         return img.filter(ImageFilter.GaussianBlur(rng.choice((3.0, 4.0))))
     if kind == "impulse":
@@ -264,7 +495,60 @@ def _extra_train_distort(img: Image.Image, rng: random.Random) -> Image.Image:
         return _color_shift(img, rng.choice((-40, -20, 20, 40)), rng.randrange(3))
     if kind == "pixelate":
         return _pixelate(img, rng.choice((0.125, 0.25)))
-    from PIL import ImageEnhance
+    if kind == "chroma":
+        return _chroma_subsample(img, rng.choice((2, 2, 4)))
+    if kind == "median":
+        return _median(img, rng.choice((3, 5)))
+    if kind == "unsharp":
+        return _unsharp(img, rng.choice((120, 180)), rng.choice((1.0, 2.0)))
+    if kind == "rotate":
+        return _small_rotate(img, rng.choice((-7.0, -3.0, 2.5, 5.0, 8.0)))
+    if kind == "nudge":
+        return _subpixel_nudge(img, rng.uniform(-1.8, 1.8), rng.uniform(-1.8, 1.8))
+    if kind == "gamma":
+        return _gamma(img, rng.choice((0.65, 0.8, 1.25, 1.5)))
+    if kind == "grain":
+        return _film_grain(img, rng.choice((0.03, 0.06)), rng.choice((4, 8, 12)), rng)
+    if kind == "aberr":
+        return _chroma_aberration(img, rng.choice((1, 2, 3)))
+    if kind == "fftlp":
+        return _fft_lowpass(img, rng.choice((0.22, 0.32, 0.45)))
+    if kind == "autocontrast":
+        return ImageOps.autocontrast(img, cutoff=rng.choice((0, 1, 2)))
+    if kind == "posterize":
+        return ImageOps.posterize(img, rng.choice((3, 4, 5)))
+    if kind == "social":
+        return _social_reencode(img, rng)
+    if kind == "gridshift":
+        return _jpeg_grid_shift(
+            img, rng.randrange(1, 8), rng.randrange(1, 8), rng.choice((55, 40, 25)),
+        )
+    if kind == "resample":
+        box = getattr(Image, "BOX", Image.BILINEAR)
+        lanczos = getattr(Image, "LANCZOS", Image.BICUBIC)
+        down = rng.choice((Image.NEAREST, box, Image.BILINEAR))
+        up = rng.choice((Image.BICUBIC, lanczos, Image.NEAREST))
+        return _resample_mismatch(img, rng.choice((0.2, 0.35, 0.5)), down, up)
+    if kind == "surface":
+        return _surface_blur(img, rng.choice((1.5, 2.5, 3.5)), rng.choice((8.0, 14.0)))
+    if kind == "phase":
+        return _fft_phase_noise(img, rng.choice((0.2, 0.35, 0.5)), rng.choice((0.14, 0.22)), rng)
+    if kind == "hue":
+        return _hue_shift(img, rng.uniform(-25.0, 25.0))
+    if kind == "wb":
+        return _white_balance(img, rng.uniform(0.78, 1.22), rng.uniform(0.78, 1.22))
+    if kind == "chroman":
+        return _chroma_noise(img, rng.choice((0.03, 0.06)), rng)
+    if kind == "equalize":
+        return ImageOps.equalize(img)
+    if kind == "vignette":
+        return _vignette(img, rng.choice((0.25, 0.4, 0.55)))
+    if kind == "perspective":
+        return _perspective_nudge(img, rng.choice((4.0, 8.0, 12.0)), rng)
+    if kind == "speckle":
+        return _speckle(img, rng.choice((0.05, 0.10)), rng)
+    if kind == "recode":
+        return _recode_stack(img, rng)
     return ImageEnhance.Brightness(img).enhance(1.0 + rng.choice((-0.35, 0.35)))
 
 
@@ -301,6 +585,33 @@ HARD_PERTURBATIONS = {
     "motion9": (lambda im: _motion_blur(im, 9), "motion blur length 9"),
     "shift20": (lambda im: _color_shift(im, 20, 0), "RGB channel shift +20"),
     "pixelate8": (lambda im: _pixelate(im, 0.125), "pixelate 8x"),
+    "jpeg5": (lambda im: jpeg_recompress(im, 5), "JPEG quality 5"),
+    "doublejpeg": (lambda im: _double_jpeg(im, 70, 35), "double JPEG 70 then 35"),
+    "webp20": (lambda im: webp_recompress(im, 20), "WebP quality 20"),
+    "chroma420": (lambda im: _chroma_subsample(im, 2), "4:2:0 chroma subsample"),
+    "median3": (lambda im: _median(im, 3), "median filter 3"),
+    "unsharp": (lambda im: _unsharp(im, 150, 1.5), "unsharp mask"),
+    "rotate3": (lambda im: _small_rotate(im, 3.0), "rotate 3 degrees"),
+    "nudge1": (lambda im: _subpixel_nudge(im, 0.7, -0.4), "subpixel translate"),
+    "gamma07": (lambda im: _gamma(im, 0.7), "gamma 0.7"),
+    "grain": (lambda im: _film_grain(im, 0.04, 8, random.Random(0)), "low-frequency film grain"),
+    "aberr2": (lambda im: _chroma_aberration(im, 2), "chromatic aberration 2px"),
+    "fftlp": (lambda im: _fft_lowpass(im, 0.32), "FFT Gaussian low-pass"),
+    "autocontrast": (lambda im: ImageOps.autocontrast(im), "histogram autocontrast"),
+    "posterize4": (lambda im: ImageOps.posterize(im, 4), "posterize 4 bits"),
+    "social": (lambda im: _social_reencode(im, random.Random(0)), "4:2:0 + messenger re-encode"),
+    "gridshift": (lambda im: _jpeg_grid_shift(im, 3, 5, 40), "shift off 8x8 grid then JPEG"),
+    "resample": (lambda im: _resample_mismatch(im, 0.35, Image.NEAREST, Image.BICUBIC), "nearest down / bicubic up"),
+    "surface": (lambda im: _surface_blur(im, 2.0, 12.0), "edge-preserving surface blur"),
+    "phase": (lambda im: _fft_phase_noise(im, 0.35, 0.18, random.Random(0)), "FFT high-frequency phase noise"),
+    "hue18": (lambda im: _hue_shift(im, 18.0), "hue rotate +18 deg"),
+    "wb": (lambda im: _white_balance(im, 1.15, 0.88), "warm white balance"),
+    "chroman": (lambda im: _chroma_noise(im, 0.04, random.Random(0)), "chroma-only noise"),
+    "equalize": (lambda im: ImageOps.equalize(im), "histogram equalize"),
+    "vignette": (lambda im: _vignette(im, 0.4), "radial vignette"),
+    "perspective": (lambda im: _perspective_nudge(im, 8.0, random.Random(0)), "tiny perspective recapture"),
+    "speckle": (lambda im: _speckle(im, 0.08, random.Random(0)), "multiplicative speckle"),
+    "recode": (lambda im: _recode_stack(im, random.Random(0)), "JPEG then WebP then JPEG"),
 }
 
 PERTURBATIONS = {

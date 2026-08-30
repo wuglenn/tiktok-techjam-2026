@@ -5,7 +5,7 @@ snapshot the repo. It pulls one shard at a time, keeps rows whose width and
 height are both > --min-side, writes JPEGs, then deletes the shard.
 
   python scripts/download_laion400m.py
-  python scripts/download_laion400m.py --max-shards 6 --max-images 80000 --min-side 512
+  python scripts/download_laion400m.py --max-shards 20 --max-images 400000 --min-side 512
 """
 
 from __future__ import annotations
@@ -128,9 +128,9 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--out", default=None)
     p.add_argument("--min-side", type=int, default=512, help="keep images with width AND height > this")
-    p.add_argument("--max-shards", type=int, default=8, help="do not pull the full 441-shard dump")
-    p.add_argument("--max-images", type=int, default=80000)
-    p.add_argument("--max-gb", type=float, default=50.0)
+    p.add_argument("--max-shards", type=int, default=20, help="do not pull the full 441-shard dump")
+    p.add_argument("--max-images", type=int, default=400000)
+    p.add_argument("--max-gb", type=float, default=90.0)
     p.add_argument("--start-shard", type=int, default=0)
     args = p.parse_args()
 

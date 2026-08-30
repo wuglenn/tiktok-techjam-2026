@@ -35,8 +35,10 @@
 #      because openfake covers the same commercial families with 130k
 #      unique images instead of a ~5k pool repeated ~27 times.
 # Real mass comes from comfor, ntire, openfake, laion400m-1 and
-# open-images-v7. `balance_labels` then draws real/fake 50/50; weights
-# apply within class.
+# open-images-v7. laion400m-1 is the largest dedicated real-only
+# source (web photos, min side >512) — FPR on in-the-wild reals is
+# the failure mode this mix is trying to close. `balance_labels`
+# then draws real/fake 50/50; weights apply within class.
 
 # Gated: request access on the model page, then `hf auth login`.
 backbone: facebook/dinov3-vitl16-pretrain-lvd1689m
@@ -148,7 +150,8 @@ data:
     - name: laion400m-1
       type: folders             # jp1924/Laion400m-1; scripts/download_laion400m.py
       real_dirs: [/workspace/data/laion400m-1/real]
-      weight: 0.09
+      weight: 0.16              # ~18% of real mass; match openfake so
+                                # web-crawl reals are not a footnote
 
     - name: open-images-v7
       type: folders             # scripts/download_open_images.py (val + test)
@@ -159,16 +162,21 @@ augment:
   # Train harder than the eval table (NTIRE 2026 / arxiv:2604.11487).
   # Eval `--perturbation all` stays JPEG 90/70/50/30, blur 0.5/1/2,
   # resize 0.5×/0.25×, noise 0.02/0.05/0.10, jitter ±20%, crop 80%.
-  jpeg_prob: 0.75
-  jpeg_quality: [90, 70, 50, 30, 20, 10]
+  # Extras also wipe generator fingerprints: DCT grid-shift JPEG,
+  # resample-kernel mismatch, FFT phase noise, chroma-only noise,
+  # recapture warp, surface blur, stacked JPEG/WebP, messenger re-encode.
+  jpeg_prob: 0.70
+  jpeg_quality: [90, 70, 50, 30, 20, 10, 5]
+  webp_prob: 0.18
+  webp_quality: [20, 40, 60, 80]
   blur_sigma: [0.5, 1.0, 2.0, 4.0]
   noise_levels: [0.02, 0.05, 0.10, 0.20]
   downscale_levels: [0.5, 0.25, 0.125]
-  color_jitter: 0.3            # +/-30% (eval table is +/-20%)
+  color_jitter: 0.35           # +/-35% (eval table is +/-20%)
   center_crop_prob: 0.15       # crop 80%
-  downscale_prob: 0.30
-  extra_distort_prob: 0.35     # impulse / motion / quantize / shift / pixelate
-  extra_distort_max: 2
+  downscale_prob: 0.35
+  extra_distort_prob: 0.55
+  extra_distort_max: 4
 
 composite:
   prob: 0.60                 # more fakes become overlays

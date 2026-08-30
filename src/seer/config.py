@@ -104,8 +104,10 @@ class AugmentConfig:
     augmentation itself (e.g. "has JPEG artifacts") and must instead learn
     generator fingerprints. Eval uses the official table (JPEG 90/70/50/30,
     blur 0.5/1/2, resize 0.5×/0.25×, noise 0.02/0.05/0.10, jitter ±20%,
-    crop 80%). Training goes harder (NTIRE 2026 / arxiv:2604.11487): JPEG
-    to q=10, blur σ=4, 0.125× resize, noise 0.20, plus impulse / motion.
+    crop 80%). Training goes harder: JPEG to q=5, WebP, blur σ=4,
+    0.125× resize, noise 0.20, plus fingerprint-masking extras (double
+    JPEG, DCT grid-shift, resample mismatch, FFT phase noise, chroma
+    noise, recapture warp, surface blur).
     """
 
     train: bool = True
@@ -115,10 +117,10 @@ class AugmentConfig:
     center_crop_prob: float = 0.15
     center_crop_scale: float = 0.8
     # compression
-    jpeg_prob: float = 0.75
-    jpeg_quality: List[int] = field(default_factory=lambda: [90, 70, 50, 30, 20, 10])
-    webp_prob: float = 0.10
-    webp_quality: List[int] = field(default_factory=lambda: [50, 95])
+    jpeg_prob: float = 0.70
+    jpeg_quality: List[int] = field(default_factory=lambda: [90, 70, 50, 30, 20, 10, 5])
+    webp_prob: float = 0.18
+    webp_quality: List[int] = field(default_factory=lambda: [20, 40, 60, 80])
     grayscale_prob: float = 0.05
     # resolution loss
     downscale_prob: float = 0.30
@@ -130,10 +132,10 @@ class AugmentConfig:
     noise_levels: List[float] = field(default_factory=lambda: [0.02, 0.05, 0.10, 0.20])
     # photometric
     color_jitter_prob: float = 0.30
-    color_jitter: float = 0.3  # +/-30% (eval table stays +/-20%)
+    color_jitter: float = 0.35  # +/-35% (eval table stays +/-20%)
     # NTIRE-style extras stacked after the base augs (1..max ops)
-    extra_distort_prob: float = 0.35
-    extra_distort_max: int = 2
+    extra_distort_prob: float = 0.55
+    extra_distort_max: int = 4
 
 
 @dataclass

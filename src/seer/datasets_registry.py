@@ -176,12 +176,12 @@ REGISTRY: tuple[DatasetSpec, ...] = (
         tier=2,
         role="Real-only: jp1924/Laion400m-1 images with both sides >512.",
         repo_id="jp1924/Laion400m-1",
-        approx_gb=50.0,
+        approx_gb=90.0,
         licence="see LAION / original image licences",
         homepage="https://huggingface.co/datasets/jp1924/Laion400m-1",
         notes=(
-            "Gated. scripts/download_laion400m.py pulls a few 10 GB shards, keeps min(w,h)>512, deletes the shard.",
-            "Do not snapshot the full 4.4 TB / 441-shard dump.",
+            "Gated. scripts/download_laion400m.py pulls ~10 GB shards, keeps min(w,h)>512, deletes the shard.",
+            "Default slice: 20 shards / 400k images / 90 GB. Do not snapshot the full 4.4 TB / 441-shard dump.",
         ),
     ),
     DatasetSpec(
