@@ -9,15 +9,20 @@ Replicates the evaluation protocol of the Pangram Image technical blog:
     blur sigma 0.5/1/2, resize 0.5x/0.25x, noise 0.02/0.05/0.10, jitter +/-20%,
     center crop 80%) via `--perturbation all`
   * False-positive-rate evals on real-only data (WikiArt etc. via folders)
+  * Error analysis - the most confident false positives / false negatives are
+    written out as heatmap panels (`--error-dir`), so failures can be read
+    rather than guessed at
 
 Metrics: macro (balanced) accuracy, mAP (average precision on the fake class),
 AUROC, F1, precision, recall, FPR, FNR. Published reference numbers from the
 Pangram blog are printed next to ours for a direct comparison.
 """
 
+import heapq
 import json
 import os
 from collections import defaultdict
+from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
@@ -26,6 +31,7 @@ from tqdm import tqdm
 
 from .augment import PERTURBATIONS, apply_perturbation, eval_transform, perturbation_names
 from .data import ComforStream, FolderDataset, NtireStream, load_sample_image
+from .heatmap import patch_logits_to_heat, save_heatmap
 from .model import load_checkpoint
 
 # ---------------------------------------------------------------------------
@@ -111,6 +117,101 @@ def _distortion_key(sample: dict) -> str:
     return str(d[0])
 
 
+class ErrorBank:
+    """The most confident mistakes of an eval pass, kept for explanation.
+
+    False positives are ranked by how confidently a real image was called AI,
+    false negatives by how confidently an AI image was called real - the two
+    ends of the score range are where a detector's blind spots are legible.
+    Each kept sample carries the patch logits the model produced for it, so
+    the dump shows *where* the model was looking, not just that it was wrong.
+    """
+
+    KINDS = {"fp": "false positive (real called AI)",
+             "fn": "false negative (AI called real)"}
+
+    def __init__(self, k: int = 4, res: int = 512, threshold: float = 0.5):
+        self.k = max(0, int(k))
+        self.res = int(res)
+        self.threshold = float(threshold)
+        self._heaps = {"fp": [], "fn": []}
+        self._tie = 0
+
+    def add(self, image, prob: float, label: int, patch_logits=None, meta=None):
+        """Offer one scored sample; kept only if it beats the current worst."""
+        if self.k == 0:
+            return
+        if label == 0 and prob >= self.threshold:
+            kind, score = "fp", prob
+        elif label == 1 and prob < self.threshold:
+            kind, score = "fn", 1.0 - prob
+        else:
+            return
+        heap = self._heaps[kind]
+        if len(heap) >= self.k and score <= heap[0][0]:
+            return  # already holding k more confident errors
+        self._tie += 1
+        record = {
+            "prob": float(prob),
+            "label": int(label),
+            "image": image.convert("RGB").resize((self.res, self.res)),
+            "patch_logits": None if patch_logits is None else patch_logits.clone(),
+            "meta": dict(meta or {}),
+        }
+        heapq.heappush(heap, (score, self._tie, record))
+        if len(heap) > self.k:
+            heapq.heappop(heap)
+
+    def counts(self) -> dict:
+        return {k: len(v) for k, v in self._heaps.items()}
+
+    def dump(self, out_dir: str) -> list:
+        """Render every kept error as a PNG panel; returns a JSON manifest."""
+        entries = []
+        if not any(self._heaps.values()):
+            return entries
+        out = Path(out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        for kind, heap in self._heaps.items():
+            ranked = sorted(heap, key=lambda item: item[0], reverse=True)
+            for rank, (_score, _tie, rec) in enumerate(ranked, 1):
+                meta = rec["meta"]
+                stem = Path(str(meta.get("image_name") or "sample")).stem[:40] or "sample"
+                path = out / f"{kind}_{rank:02d}_p{rec['prob']:.3f}_{stem}.png"
+                source = meta.get("generator") or meta.get("architecture") or ""
+                title = f"{self.KINDS[kind]}\n{source}" if source else self.KINDS[kind]
+                if rec["patch_logits"] is None:
+                    rec["image"].save(path)  # page-only checkpoint: no heatmap
+                else:
+                    heat = patch_logits_to_heat(
+                        rec["patch_logits"], (self.res, self.res)
+                    )[0].numpy()
+                    save_heatmap(str(path), rec["image"], heat, rec["prob"],
+                                 self.res, title=title)
+                entries.append({
+                    "kind": kind,
+                    "rank": rank,
+                    "file": str(path),
+                    "prob_ai": rec["prob"],
+                    "label": rec["label"],
+                    "explained": rec["patch_logits"] is not None,
+                    **{k: v for k, v in meta.items() if v not in (None, "", ())},
+                })
+        return entries
+
+
+def _error_meta(sample: dict) -> dict:
+    return {
+        "image_name": sample.get("image_name") or "",
+        "image_path": sample.get("image_path") or "",
+        "source": sample.get("source") or "",
+        "dataset": sample.get("dataset") or "",
+        "generator": sample.get("generator") or "",
+        "architecture": sample.get("architecture") or "",
+        "distortions": list(sample.get("distortions") or ()),
+    }
+
+
 def _chunked(ds, batch_size: int, max_samples: Optional[int] = None):
     """Stream a dataset in fixed-size chunks (never materialize it all)."""
     chunk: List[dict] = []
@@ -178,8 +279,11 @@ def _single_pass(model, cfg_dict, perturbation: Optional[str], augmented: bool,
                  dataset: str, batch_size: int, max_samples: Optional[int],
                  hflip_tta: bool, res: int, device,
                  dump_dir: Optional[str] = None, step: int = 0,
-                 misclass_max: int = 0) -> dict:
-    ds = _build_eval_dataset(dataset)
+                 misclass_max: int = 0,
+                 real_dirs: Optional[List[str]] = None,
+                 fake_dirs: Optional[List[str]] = None,
+                 error_bank: Optional[ErrorBank] = None) -> dict:
+    ds = _build_eval_dataset(dataset, real_dirs=real_dirs, fake_dirs=fake_dirs)
 
     pert_name = perturbation or ("pangram" if augmented else "clean")
     perturb_fn = (lambda im: apply_perturbation(im, pert_name)) if pert_name != "clean" else None
@@ -198,6 +302,17 @@ def _single_pass(model, cfg_dict, perturbation: Optional[str], augmented: bool,
             if hflip_tta:
                 out_f = model(torch.flip(x, dims=[-1]))
                 p = 0.5 * (p + torch.sigmoid(out_f["logits"]).float())
+        if error_bank is not None:
+            # the images the model actually saw (post-perturbation) are what
+            # an error dump has to show
+            patch = out.get("patch_logits")
+            patch = None if patch is None else patch.detach().float().cpu()
+            for i, s in enumerate(chunk):
+                error_bank.add(
+                    imgs[i], float(p[i]), int(s["label"]),
+                    patch_logits=None if patch is None else patch[i],
+                    meta=_error_meta(s),
+                )
         p_list = p.cpu().tolist()
         y_list = [int(s["label"]) for s in chunk]
         probs.extend(p_list)
@@ -288,6 +403,8 @@ def evaluate_checkpoint(
     out_json: Optional[str] = None,
     device: Optional[str] = None,
     res: Optional[int] = None,
+    error_dir: Optional[str] = None,
+    error_n: int = 4,
 ) -> dict:
     device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     model, cfg_dict, ckpt = load_checkpoint(checkpoint, device=device)
@@ -297,18 +414,29 @@ def evaluate_checkpoint(
     def pass_kwargs():
         return dict(model=model, cfg_dict=cfg_dict, dataset=dataset,
                     batch_size=batch_size, max_samples=max_samples,
-                    hflip_tta=hflip_tta, res=res, device=device)
+                    hflip_tta=hflip_tta, res=res, device=device,
+                    real_dirs=real_dirs, fake_dirs=fake_dirs)
+
+    def new_bank():
+        return ErrorBank(error_n, res=res) if error_dir and error_n > 0 else None
 
     sweep = perturbation_names(perturbation)
     if sweep:
         results = {}
+        errors = []
         for name in sweep:
-            m = _single_pass(perturbation=name, augmented=False, **pass_kwargs())
+            bank = new_bank()
+            m = _single_pass(perturbation=name, augmented=False,
+                             error_bank=bank, **pass_kwargs())
             results[name] = {k: m[k] for k in
                              ("macro_accuracy", "mAP", "auroc", "f1", "precision",
                               "recall", "accuracy", "fpr", "fnr", "n")}
+            if bank is not None:
+                errors.extend(_dump_errors(bank, os.path.join(error_dir, name), name))
         metrics = dict(results.get("clean") or next(iter(results.values())))
         metrics["perturbation_sweep"] = results
+        if errors:
+            metrics["error_analysis"] = errors
         _print_robustness_table(results)
     else:
         if perturbation is not None and perturbation not in PERTURBATIONS:
@@ -316,7 +444,13 @@ def evaluate_checkpoint(
                 f"Unknown perturbation '{perturbation}'. "
                 f"Available: {list(PERTURBATIONS)} or all / extra / all+extra"
             )
-        metrics = _single_pass(perturbation=perturbation, augmented=augmented, **pass_kwargs())
+        bank = new_bank()
+        metrics = _single_pass(perturbation=perturbation, augmented=augmented,
+                               error_bank=bank, **pass_kwargs())
+        if bank is not None:
+            errors = _dump_errors(bank, error_dir, metrics["perturbation"])
+            if errors:
+                metrics["error_analysis"] = errors
 
     metrics["checkpoint"] = checkpoint
     _print_report(metrics, dataset)
@@ -330,6 +464,25 @@ def evaluate_checkpoint(
 
 def _fmt(v, scale=100.0, nd=2):
     return "n/a" if v is None or (isinstance(v, float) and np.isnan(v)) else f"{v * scale:.{nd}f}%"
+
+
+def _dump_errors(bank: ErrorBank, out_dir: str, pert_name: str) -> list:
+    entries = bank.dump(out_dir)
+    if not entries:
+        print(f"[seer] no misclassifications to dump for '{pert_name}'")
+        return entries
+    print(f"\n  error analysis [{pert_name}] -> {out_dir}")
+    for kind, header in ErrorBank.KINDS.items():
+        rows = [e for e in entries if e["kind"] == kind]
+        if not rows:
+            print(f"    {header}: none")
+            continue
+        print(f"    {header}:")
+        for e in rows:
+            source = e.get("generator") or e.get("architecture") or "unknown source"
+            print(f"      P(AI)={e['prob_ai']:.3f}  {source:<24s} "
+                  f"{Path(e['file']).name}")
+    return entries
 
 
 def _print_robustness_table(results: dict):
@@ -418,6 +571,11 @@ def main(argv=None):
     p.add_argument("--max-samples", type=int, default=None)
     p.add_argument("--batch-size", type=int, default=16)
     p.add_argument("--out-json", type=str, default=None)
+    p.add_argument("--error-dir", type=str, default=None,
+                   help="write the most confident false positives / negatives "
+                        "there as heatmap panels")
+    p.add_argument("--error-n", type=int, default=4,
+                   help="how many of each to keep (default 4)")
     args = p.parse_args(argv)
     evaluate_checkpoint(
         checkpoint=args.checkpoint,
@@ -430,6 +588,8 @@ def main(argv=None):
         real_dirs=args.real_dir,
         fake_dirs=args.fake_dir,
         out_json=args.out_json,
+        error_dir=args.error_dir,
+        error_n=args.error_n,
     )
 
 
