@@ -223,22 +223,23 @@ Even the largest supported backbone stays under budget; the default leaves
   patch term `pos_weight`-balanced by `n_real/n_fake` patches
   (`balance_patch`) so a small fake-over-real crop is not drowned out by the
   real majority around it.
-- **Composite training** (60% of fake samples; ~25% of the batch is mixed
-  FoR/RoF): cropped overlays layered over a base image. Compositing is
+- **Composite training** (60% of fake samples; FoR/RoF/FoF/RoR quota-equal,
+  page labels stay 1:1): cropped overlays layered over a base image. Compositing is
   itself a discontinuity, so *all four*
   top-on-base pairings are trained — fake-over-real (localized labels),
   real-over-fake (inverted labels), fake-over-fake (label 1 everywhere),
-  real-over-real (label stays real). Per-pixel fake-ness is Porter-Duff
-  composited along with the RGB — a 40% blend is a 0.4 target — then pooled
-  to the patch grid, so soft mixes get soft targets; the page target stays
-  binary (any visible AI → fake), and label maps travel with the crop when an
-  already-composited slot is reused as a source. Overlays are
-  random crops of the source (own scale / aspect / flip), a sample can
-  receive n ~ Uniform{1,...,k} overlays (k = max_overlays, default 3),
-  and two overlay modes mix by default:
-  - `blend` — smooth bilinear alpha (seamless, diffusion-style mixes)
-  - `paste` — opaque hard-edged overlay with a ~2px feathered border
-    (sticker / screenshot-style content drops)
+  real-over-real (label stays real). Each overlay independently draws
+  alpha-blend vs hard-paste and hard vs soft feather, so one stacked
+  image can mix all four combinations. RGB uses that alpha; labels
+  follow occupancy, not blend opacity (a 40% mix is still fake, not a
+  0.4 target). Soft-feather seams stay mixed after average-pool; the
+  page target is binary (any visible AI → fake). Label maps travel with
+  the crop when an already-composited slot is reused as a source.
+  Overlays are large difficulty-varying crops of the source (easy ≈
+  full frame, hard still a substantial semantic region) so objects/scene
+  survive the shrink-to-window; a sample can receive n ~ Uniform{1,...,k}
+  overlays (k = max_overlays, default 5). Later overlays on a fake page
+  are independently real or fake so stacks cover every class sequence.
 - **Wild-simulation augmentation** applied symmetrically to both classes,
   with levels drawn from the benchmark robustness protocols:
   JPEG q∈{90,70,50,30} · blur σ∈{0.5,1.0,2.0} · resize 0.5×/0.25× ·

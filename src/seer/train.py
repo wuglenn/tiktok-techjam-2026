@@ -28,7 +28,7 @@ from .data import (
     parquet_files,
     set_holdout,
 )
-from .eval import compute_metrics, eval_named_dataset
+from .eval import OPENFAKE_EVAL, compute_metrics, eval_named_dataset
 from .heatmap import save_batch_heatmaps
 from .misclass import dump_misclassified
 from .model import SeerDetector, EMA, build_param_groups, detection_loss, save_checkpoint
@@ -214,6 +214,10 @@ def _run_held_out_evals(
                 res=cfg.res,
                 device=device,
                 batch_size=min(16, max(1, int(cfg.batch_size))),
+                max_samples=(
+                    int(getattr(cfg, "eval_openfake_max", 4096))
+                    if name in OPENFAKE_EVAL else None
+                ),
                 dump_dir=os.path.join(dump_root, name) if dump_root else None,
                 step=step,
                 misclass_max=int(getattr(cfg, "misclass_max", 64) or 0),

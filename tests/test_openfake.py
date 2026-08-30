@@ -201,6 +201,40 @@ def test_missing_holdout_is_a_filenotfound_not_a_crash(tmp_path, monkeypatch):
     assert "openfake.py holdout" in str(exc.value)
 
 
+def test_holdout_eval_uses_a_stratified_subset(tmp_path, monkeypatch):
+    """Periodic evals must not walk the full ~90k holdout."""
+    from PIL import Image
+
+    from seer import eval as E
+    from seer import paths
+
+    root = tmp_path / "openfake" / "holdout_core"
+    for cls, gens, n in (
+        ("fake", ("nano-banana-pro", "flux.2-klein-9b", "sora-2"), 12),
+        ("real", ("docci", "imagenet"), 12),
+    ):
+        for gen in gens:
+            d = root / cls / gen
+            d.mkdir(parents=True)
+            for i in range(n):
+                Image.new("RGB", (32, 32), (i, 7, 7)).save(d / f"{i}.jpg")
+
+    monkeypatch.setattr(paths, "DATA_ROOT", tmp_path)
+    ds = E._build_eval_dataset("openfake_test", max_samples=10)
+    samples = [ds[i] for i in range(len(ds))]
+    assert len(samples) == 10
+    assert sum(s["label"] == 0 for s in samples) == 5
+    assert sum(s["label"] == 1 for s in samples) == 5
+    # every generator still appears (round-robin)
+    assert {"nano-banana-pro", "flux.2-klein-9b", "sora-2"} <= {
+        s["generator"] for s in samples if s["label"] == 1
+    }
+    assert {"docci", "imagenet"} <= {s["generator"] for s in samples if s["label"] == 0}
+
+    full = E._build_eval_dataset("openfake_test", max_samples=0)
+    assert len(full) == 12 * 5
+
+
 def test_holdout_eval_reports_per_generator(tmp_path, monkeypatch):
     """FolderDataset carries the generator in the parent directory; the eval
     pass must group on it, otherwise the holdout collapses to one bucket."""

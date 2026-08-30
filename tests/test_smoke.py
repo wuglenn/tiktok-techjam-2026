@@ -81,23 +81,24 @@ def test_batch_builder_composites():
                                  "composite.real_real_fraction=0.5",
                                  "max_steps=2", "backbone=tiny", "pretrained=false"])
     for mode in ("blend", "paste", "mixed"):
-        cfg.composite.mode = mode
-        builder = BatchBuilder(cfg, train=True, patch_grid=14, seed=0)
-        samples = [
-            {"image": _rand_pil(480, random.Random(i)), "label": i % 2,
-             "generator": "g", "architecture": "LatDiff"}
-            for i in range(8)
-        ]
-        batch = builder(samples)
-        assert batch["images"].shape == (8, 3, 224, 224)
-        assert batch["labels"].shape == (8,)
-        assert batch["patch_labels"].shape == (8, 196)
-        assert set(batch["labels"].tolist()) <= {0.0, 1.0}
-        assert torch.isfinite(batch["images"]).all()
-        # patch labels must match the global label for non-composited samples and
-        # be within [0,1] always
-        assert ((batch["patch_labels"] >= 0) & (batch["patch_labels"] <= 1)).all()
-    print("batch builder + composites (blend/paste/mixed) OK")
+        for feather in ("hard", "soft", "mixed"):
+            cfg.composite.mode = mode
+            cfg.composite.feather = feather
+            builder = BatchBuilder(cfg, train=True, patch_grid=14, seed=0)
+            samples = [
+                {"image": _rand_pil(480, random.Random(i)), "label": i % 2,
+                 "generator": "g", "architecture": "LatDiff"}
+                for i in range(8)
+            ]
+            batch = builder(samples)
+            assert batch["images"].shape == (8, 3, 224, 224)
+            assert batch["labels"].shape == (8,)
+            assert batch["patch_labels"].shape == (8, 196)
+            assert set(batch["labels"].tolist()) <= {0.0, 1.0}
+            assert torch.isfinite(batch["images"]).all()
+            # patch labels in [0, 1]; soft seams may be mixed, page stays binary
+            assert ((batch["patch_labels"] >= 0) & (batch["patch_labels"] <= 1)).all()
+    print("batch builder + composites (blend/paste × hard/soft) OK")
 
 
 def test_composite_combinations():
@@ -128,30 +129,31 @@ def test_composite_combinations():
     def fake_patch_rows(batches):
         return torch.cat([x["patch_labels"][x["labels"] > 0] for x in batches])
 
-    # invariants: soft patches in [0, 1]; page is binary (any AI → fake)
+    # invariants: patches in [0, 1] (soft seams mixed); page is binary (any AI → fake)
     for mode in ("blend", "paste", "mixed"):
-        for x in run(builder(mode=mode, real_real_fraction=1.0)):
+        for x in run(builder(mode=mode, feather="mixed", real_real_fraction=1.0)):
             pl, y = x["patch_labels"], x["labels"]
             assert ((pl >= 0) & (pl <= 1)).all()
             assert set(y.tolist()) <= {0.0, 1.0}
             assert torch.equal(y, (pl.amax(dim=1) > 0).float())
             assert torch.isfinite(x["images"]).all()
 
-    # fake-over-real: localized mixed patch labels (soft on blended cells)
+    # fake-over-real: localized mixed patch labels (seam cells between 0 and 1)
     rows = fake_patch_rows(run(builder(fake_on_real=1.0, real_on_fake=0.0,
                                        fake_on_fake=0.0, max_overlays=1)))
     assert rows.shape[0] > 0
     assert ((rows < 0.5).any(dim=1) & (rows > 0).any(dim=1)).all()
 
-    # real-over-fake: inverted — overlay cells drop below 1
+    # real-over-fake: inverted — overlay cells drop below 1, fake base stays
     rows = fake_patch_rows(run(builder(fake_on_real=0.0, real_on_fake=1.0,
                                        fake_on_fake=0.0, max_overlays=1)))
     assert rows.shape[0] > 0
     assert ((rows < 1).any(dim=1) & (rows > 0.5).any(dim=1)).all()
 
-    # fake-over-fake with no FoR/RoF in the mix: patches stay 1
+    # fake-over-fake as a single paste: patches stay 1 (later real
+    # overlays on a fake page are allowed, so stacks can mix)
     rows = fake_patch_rows(run(builder(fake_on_real=0.0, real_on_fake=0.0,
-                                       fake_on_fake=1.0, max_overlays=3)))
+                                       fake_on_fake=1.0, max_overlays=1)))
     assert rows.shape[0] > 0
     assert torch.allclose(rows, torch.ones_like(rows))
 
@@ -162,12 +164,11 @@ def test_composite_combinations():
         assert torch.equal(y, (pl.amax(dim=1) > 0).float())
         assert (pl[y == 0] == 0).all()
 
-    # stacking: more overlays -> more pasted area on fake samples
-    one = fake_patch_rows(run(builder(fake_on_real=1.0, real_on_fake=0.0,
-                                      fake_on_fake=0.0, max_overlays=1))).mean()
+    # stacking: later overlays may be real or fake; rows stay valid FoR mixes
     many = fake_patch_rows(run(builder(fake_on_real=1.0, real_on_fake=0.0,
-                                      fake_on_fake=0.0, max_overlays=5))).mean()
-    assert many > one
+                                      fake_on_fake=0.0, max_overlays=5)))
+    assert many.shape[0] > 0
+    assert ((many < 0.5).any(dim=1) & (many > 0).any(dim=1)).all()
 
     # degenerate batches: no real partner -> fall back to fake-over-fake
     b = builder()
@@ -185,13 +186,51 @@ def test_composite_combinations():
             "generator": "g", "architecture": "LatDiff"}])
     assert x["labels"].tolist() == [0.0] and (x["patch_labels"] == 0).all()
 
-    # blend: some patch targets are strictly fractional (alpha %, not 0/1)
-    blend_rows = fake_patch_rows(run(builder(
-        mode="blend", fake_on_real=1.0, real_on_fake=0.0, fake_on_fake=0.0,
+    # soft feather: seam patches are strictly fractional (spatial mix, not alpha %)
+    soft_rows = fake_patch_rows(run(builder(
+        feather="soft", fake_on_real=1.0, real_on_fake=0.0, fake_on_fake=0.0,
         max_overlays=1,
     )))
-    assert ((blend_rows > 0) & (blend_rows < 1)).any()
+    assert ((soft_rows > 0) & (soft_rows < 1)).any()
     print("composite combinations (4 pairings, stacked overlays) OK")
+
+
+def test_composite_pairing_balance():
+    """FoR/RoF/FoF/RoR quotas keep page labels 1:1 on a balanced batch."""
+    cfg = load_config(overrides=[
+        "res=224", "backbone=tiny", "pretrained=false", "composite.prob=1.0",
+    ])
+    b = BatchBuilder(cfg, train=True, patch_grid=14, seed=0)
+    n_real = n_fake = 0
+    for k in range(16):
+        samples = [
+            {"image": _rand_pil(480, random.Random(k * 100 + i)), "label": i % 2,
+             "generator": "g", "architecture": "LatDiff"} for i in range(8)
+        ]
+        x = b(samples)
+        n_real += int((x["labels"] == 0).sum())
+        n_fake += int((x["labels"] == 1).sum())
+        assert torch.equal(x["labels"], (x["patch_labels"].amax(dim=1) > 0).float())
+    assert n_real == n_fake
+    print("composite pairing balance (page 1:1) OK")
+
+
+def test_overlay_crop_keeps_semantics():
+    """Overlays crop a large, difficulty-varying fraction of the source."""
+    cfg = load_config(overrides=["res=224", "backbone=tiny", "pretrained=false"])
+    b = BatchBuilder(cfg, train=True, patch_grid=14, seed=0)
+    fracs = []
+    for _ in range(60):
+        _, _, ch, cw, _ = b._crop_geom(512, 512, 80, 80)
+        fracs.append((ch / 512, cw / 512))
+    flat = [s for hw in fracs for s in hw]
+    # hard tier floor is 0.45; never a small texture chip
+    assert min(flat) >= 0.45 - 1e-9
+    assert max(flat) <= 1.0
+    means = [(h + w) / 2 for h, w in fracs]
+    # all three difficulty tiers should appear
+    assert min(means) < 0.70 and max(means) > 0.80
+    print("overlay crop keeps semantics (difficulty-varying) OK")
 
 
 def test_augment_pipeline():
@@ -567,6 +606,8 @@ if __name__ == "__main__":
     test_train_step_and_ema()
     test_batch_builder_composites()
     test_composite_combinations()
+    test_composite_pairing_balance()
+    test_overlay_crop_keeps_semantics()
     test_augment_pipeline()
     test_perturbations()
     test_fingerprint_mask_ops()

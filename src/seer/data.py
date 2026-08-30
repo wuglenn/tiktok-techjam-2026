@@ -1047,11 +1047,19 @@ class BatchBuilder:
 
     # -- composite ---------------------------------------------------------
 
-    def _pick_mode(self) -> str:
-        mode = getattr(self.comp, "mode", "blend")
+    def _pick_overlay(self) -> str:
+        """Per overlay: alpha blend vs opaque paste. `mixed` draws one of the two."""
+        mode = getattr(self.comp, "mode", "mixed")
         if mode == "mixed":
-            mode = self.rng.choice(["blend", "paste"])
+            return self.rng.choice(["blend", "paste"])
         return mode
+
+    def _pick_feather(self) -> str:
+        """Per overlay: crisp edge vs smooth fade. `mixed` draws one of the two."""
+        feather = getattr(self.comp, "feather", "mixed")
+        if feather == "mixed":
+            return self.rng.choice(["hard", "soft"])
+        return feather
 
     def _weighted_choice(self, weights) -> Optional[str]:
         """Draw a key by weight; None when every weight is zero."""
@@ -1065,6 +1073,21 @@ class BatchBuilder:
                 return name
         return list(weights)[-1]
 
+    def _allocate(self, n, weights):
+        """Split `n` slots across keys by weight (largest remainder)."""
+        names = list(weights)
+        w = [max(0.0, float(weights[k])) for k in names]
+        tot = sum(w)
+        if n <= 0 or tot <= 0.0:
+            return {k: 0 for k in names}
+        raw = [n * x / tot for x in w]
+        counts = [int(x) for x in raw]
+        leftover = n - sum(counts)
+        order = sorted(range(len(names)), key=lambda i: raw[i] - counts[i], reverse=True)
+        for i in order[:leftover]:
+            counts[i] += 1
+        return dict(zip(names, counts))
+
     def _rand_rect(self):
         """One random rectangle in patch-grid space -> (y0, x0, h, w) in cells."""
         G = self.G
@@ -1072,40 +1095,72 @@ class BatchBuilder:
         h = max(1, int(G * self.rng.uniform(0.15, 0.7)))
         return self.rng.randint(0, G - h), self.rng.randint(0, G - w), h, w
 
-    def _region_alpha(self, rect, mode):
-        """Compositing weight (res x res) for one paste:
-          "paste" - opaque hard-edged rect with a ~2px feathered border
-          "blend" - smooth bilinear alpha in [0.75, 1.0]
+    def _region_maps(self, rect, overlay, feather):
+        """Occupancy + RGB alpha (res x res) for one paste.
+
+        Overlay and feather are independent:
+          overlay "paste" - opaque (alpha = occupancy)
+          overlay "blend" - occupancy × Uniform(0.75, 1.0)
+          feather "hard"  - crisp patch-aligned rectangle
+          feather "soft"  - bilinear fade across the shared cell edge
+        Occupancy is the spatial region only — blend opacity does not
+        shrink it — so labels can follow `occ > 0.5` without a 40% mix
+        becoming a 0.4 target.
         """
         y0, x0, h, w = rect
-        if mode == "paste":
+        if feather == "hard":
             c = self.res // self.G
-            a = torch.zeros(self.res, self.res)
-            a[y0 * c:(y0 + h) * c, x0 * c:(x0 + w) * c] = 1.0
-            return F.avg_pool2d(a[None, None], 5, stride=1, padding=2)[0, 0].clamp(0.0, 1.0)
-        m = torch.zeros(self.G, self.G)
-        m[y0:y0 + h, x0:x0 + w] = 1.0
-        m = F.avg_pool2d(m[None, None], 3, stride=1, padding=1)[0, 0]
-        a = F.interpolate(m[None, None], size=(self.res, self.res), mode="bilinear",
-                          align_corners=False)[0, 0].clamp(0.0, 1.0)
-        return a * self.rng.uniform(0.75, 1.0)
+            occ = torch.zeros(self.res, self.res)
+            occ[y0 * c:(y0 + h) * c, x0 * c:(x0 + w) * c] = 1.0
+        else:
+            m = torch.zeros(self.G, self.G)
+            m[y0:y0 + h, x0:x0 + w] = 1.0
+            occ = F.interpolate(
+                m[None, None], size=(self.res, self.res),
+                mode="bilinear", align_corners=False,
+            )[0, 0].clamp(0.0, 1.0)
+        if overlay == "blend":
+            return occ * self.rng.uniform(0.75, 1.0), occ
+        return occ, occ
+
+    # Source-relative crop scales. Each overlay draws one difficulty tier so
+    # easy pastes keep nearly the whole source (objects/scene survive the
+    # shrink-to-window) while hard pastes crop more but still carry a large
+    # semantic region, not a random texture chip.
+    _OVERLAY_CROP_TIERS = (
+        (0.85, 1.00),  # easy
+        (0.65, 0.85),  # medium
+        (0.45, 0.65),  # hard
+    )
 
     def _crop_geom(self, H, W, ph, pw):
-        """Crop box + flip for an overlay, shared by pixels and label maps."""
-        ch = max(8, min(H, int(round(ph * self.rng.uniform(0.5, 2.0)))))
-        cw = max(8, min(W, int(round(pw * self.rng.uniform(0.5, 2.0)))))
+        """Crop box + flip for an overlay, shared by pixels and label maps.
+
+        Crop size is a large fraction of the *source*, not of the paste
+        window (`ph`, `pw` only size the later resample). Difficulty is
+        drawn per overlay so training sees easy (almost-full) through hard
+        (tighter) crops.
+        """
+        lo, hi = self._OVERLAY_CROP_TIERS[
+            self.rng.randrange(len(self._OVERLAY_CROP_TIERS))
+        ]
+        ch = max(8, min(H, int(round(H * self.rng.uniform(lo, hi)))))
+        cw = max(8, min(W, int(round(W * self.rng.uniform(lo, hi)))))
         y0 = self.rng.randint(0, H - ch)
         x0 = self.rng.randint(0, W - cw)
         return y0, x0, ch, cw, self.rng.random() < 0.5
 
-    def _resample_crop(self, src, y0, x0, ch, cw, flip, ph, pw):
+    def _resample_crop(self, src, y0, x0, ch, cw, flip, ph, pw, *, nearest=False):
         """Apply one overlay crop. `src` is (C, H, W) — RGB or a 1-channel label."""
         crop = src[..., y0:y0 + ch, x0:x0 + cw]
         if (ch, cw) != (ph, pw):
-            crop = F.interpolate(
-                crop[None], size=(ph, pw), mode="bilinear",
-                align_corners=False, antialias=True,
-            )[0]
+            if nearest:
+                crop = F.interpolate(crop[None], size=(ph, pw), mode="nearest")[0]
+            else:
+                crop = F.interpolate(
+                    crop[None], size=(ph, pw), mode="bilinear",
+                    align_corners=False, antialias=True,
+                )[0]
         if flip:
             crop = torch.flip(crop, dims=[-1])
         return crop
@@ -1113,14 +1168,16 @@ class BatchBuilder:
     def _paste(self, img, src_img, lab, src_lab):
         """Layer a crop of `src_img` / `src_lab` over `img` / `lab` in place.
 
-        Labels travel with the same crop, scale and flip as the pixels, then
-        Porter-Duff over: both the RGB and the per-pixel fake-ness.
+        Each overlay draws its own blend-vs-paste and hard-vs-soft feather.
+        RGB uses that alpha; labels follow occupancy, not blend opacity:
+        overlay class where occ > 0.5, else base. A 40% fake mix is still
+        fake (1), not 0.4. Soft-feather seams go mixed later via average-pool.
         """
+        overlay, feather = self._pick_overlay(), self._pick_feather()
         y0, x0, h, w = self._rand_rect()
-        mode = self._pick_mode()
         c = self.res // self.G
-        alpha = self._region_alpha((y0, x0, h, w), mode)
-        margin = 2 * c if mode == "blend" else 2
+        alpha, occ = self._region_maps((y0, x0, h, w), overlay, feather)
+        margin = c if feather == "soft" else 0
         py, px, ph, pw = y0 * c, x0 * c, h * c, w * c
         wy0, wx0 = max(0, py - margin), max(0, px - margin)
         wy1 = min(self.res, py + ph + margin)
@@ -1128,10 +1185,16 @@ class BatchBuilder:
         _, H, W = src_img.shape
         geom = self._crop_geom(H, W, wy1 - wy0, wx1 - wx0)
         crop = self._resample_crop(src_img, *geom, wy1 - wy0, wx1 - wx0)
-        lab_crop = self._resample_crop(src_lab, *geom, wy1 - wy0, wx1 - wx0)
+        lab_crop = self._resample_crop(
+            src_lab, *geom, wy1 - wy0, wx1 - wx0, nearest=True,
+        )
         a = alpha[wy0:wy1, wx0:wx1]
+        own = occ[wy0:wy1, wx0:wx1] > 0.5
         img[:, wy0:wy1, wx0:wx1] = img[:, wy0:wy1, wx0:wx1] * (1.0 - a) + crop * a
-        lab[:, wy0:wy1, wx0:wx1] = lab[:, wy0:wy1, wx0:wx1] * (1.0 - a) + lab_crop * a
+        region = lab[:, wy0:wy1, wx0:wx1]
+        lab[:, wy0:wy1, wx0:wx1] = torch.where(
+            own, lab_crop > 0, region > 0,
+        ).to(lab.dtype)
 
     def _apply_composites(self, images, labels, patch_labels):
         """Layer cropped overlays over base images (composite training).
@@ -1142,13 +1205,21 @@ class BatchBuilder:
           real_on_fake  inverted patch labels: only the pasted region is real
           fake_on_fake  seams inside fully-fake content (all patches stay 1)
           real_on_real  label stays 0: blending alone is not a fake cue
-        Each composited sample gets n ~ Uniform{1,...,k} pastes
-        (k = max_overlays) with independent regions, scales and modes.
+        Pairings are quota-allocated so FoR/RoF/FoF/RoR stay even
+        inside the batch (RoR count tracks the fake pairings, clipped
+        to the number of reals). Page labels stay 1:1: fake slots
+        receive FoR/RoF/FoF, real slots only RoR. Later overlays on a
+        fake page are independently real or fake; RoR stays all-real.
+        Each sample gets n ~ Uniform{1,...,k} pastes (k = max_overlays),
+        and every paste draws its own blend/paste and hard/soft feather.
 
-        Per-pixel fake-ness is alpha-composited with the RGB (a 40% blend
-        is a 0.4 target), then average-pooled to the patch grid. The page
-        target stays binary: any visible AI → fake. Later overlays may
-        read already-composited slots; their label maps travel with them.
+        Overlay crops keep a large, difficulty-varying fraction of the
+        source so semantic content survives the shrink-to-window. Pixel
+        labels follow occupancy (overlay class where occ > 0.5), not
+        blend opacity. Average-pool to the patch grid so a soft
+        fake/real seam stays mixed; the page target is binary (any
+        visible AI → fake). Later overlays may read already-composited
+        slots; their label maps travel with them.
         """
         B = images.shape[0]
         comp = self.comp
@@ -1164,7 +1235,20 @@ class BatchBuilder:
             cands = by_cls[cls]
             return self.rng.choice(cands) if cands else None
 
-        def stack(i, base, first_src):
+        def pick_overlay_src(stay_real):
+            """Next overlay source. RoR stays real (page label 0); otherwise
+            real or fake independently so stacks cover every class sequence."""
+            if stay_real:
+                return pick(0.0)
+            order = [0.0, 1.0]
+            self.rng.shuffle(order)
+            for cls in order:
+                src = pick(cls)
+                if src is not None:
+                    return src
+            return None
+
+        def stack(i, base, first_src, stay_real=False):
             """`base` (current pixels/labels) + n pastes; first from `first_src`."""
             src_img = images[first_src].clone()
             src_lab = pixel_lab[first_src].clone()
@@ -1174,7 +1258,7 @@ class BatchBuilder:
             k = max(1, int(comp.max_overlays))
             for n in range(self.rng.randint(1, k)):
                 if n > 0:
-                    src = pick(float(orig[first_src]))
+                    src = pick_overlay_src(stay_real)
                     if src is None:
                         break
                     src_img, src_lab = images[src], pixel_lab[src]
@@ -1183,26 +1267,39 @@ class BatchBuilder:
             patch_labels[i] = pl.flatten()
             labels[i] = 1.0 if float(pl.max()) > 0.0 else 0.0
 
-        for i in range(B):
-            if float(orig[i]) > 0.5 and self.rng.random() < comp.prob:
-                combo = self._weighted_choice({
-                    "fake_on_real": comp.fake_on_real if by_cls[0.0] else 0.0,
-                    "real_on_fake": comp.real_on_fake if by_cls[0.0] else 0.0,
-                    "fake_on_fake": comp.fake_on_fake,
-                })
-                if combo is None:
-                    continue
-                if combo == "fake_on_real":
-                    stack(i, self.rng.choice(by_cls[0.0]), i)
-                elif combo == "real_on_fake":
-                    stack(i, i, self.rng.choice(by_cls[0.0]))
-                else:  # fake_on_fake
-                    stack(i, i, self.rng.choice(by_cls[1.0]))
-            elif float(orig[i]) < 0.5 and \
-                    self.rng.random() < comp.prob * comp.real_real_fraction:
-                partners = [j for j in by_cls[0.0] if j != i]
-                if partners:
-                    stack(i, i, self.rng.choice(partners))
+        reals = list(by_cls[0.0])
+        fakes = list(by_cls[1.0])
+        self.rng.shuffle(reals)
+        self.rng.shuffle(fakes)
+        chosen_f = [i for i in fakes if self.rng.random() < comp.prob]
+        fake_w = {
+            "fake_on_real": comp.fake_on_real if reals else 0.0,
+            "real_on_fake": comp.real_on_fake if reals else 0.0,
+            "fake_on_fake": comp.fake_on_fake,
+        }
+        w_fake = sum(max(0.0, float(v)) for v in fake_w.values())
+        w_ror = float(getattr(comp, "real_on_real", 0.0) or 0.0)
+        if w_fake > 0.0:
+            alloc = self._allocate(len(chosen_f), fake_w)
+            it = iter(chosen_f)
+            for combo, n in alloc.items():
+                for _ in range(n):
+                    i = next(it)
+                    if combo == "fake_on_real":
+                        stack(i, self.rng.choice(reals), i)
+                    elif combo == "real_on_fake":
+                        stack(i, i, self.rng.choice(reals))
+                    else:
+                        stack(i, i, self.rng.choice(fakes))
+            ratio = w_ror / w_fake if w_ror > 0.0 else float(comp.real_real_fraction)
+            n_ror = min(len(reals), int(round(len(chosen_f) * ratio)))
+        else:
+            n_ror = sum(1 for _ in reals
+                        if self.rng.random() < comp.prob * comp.real_real_fraction)
+        for i in reals[:n_ror]:
+            partners = [j for j in reals if j != i]
+            if partners:
+                stack(i, i, self.rng.choice(partners), stay_real=True)
 
         return images, labels, patch_labels
 

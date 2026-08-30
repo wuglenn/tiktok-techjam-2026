@@ -21,9 +21,10 @@ Pangram blog are printed next to ours for a direct comparison.
 import heapq
 import json
 import os
+import random
 from collections import defaultdict
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import torch
@@ -69,6 +70,13 @@ OPENFAKE_EVAL = {
     "openfake_test": "holdout_core",
     "openfake_reddit": "holdout_reddit",
 }
+
+# Periodic train-loop evals cannot afford the full holdout (core/test is
+# ~90k JPEGs). Default is a class-balanced, per-generator slice so every
+# unseen model still appears. 0 = score everything. The on-disk holdout
+# is unchanged — this is eval-only.
+OPENFAKE_EVAL_MAX = 4096
+OPENFAKE_EVAL_SEED = 0
 
 _NTIRE_SAMPLE_CACHE: dict = {}
 
@@ -241,7 +249,49 @@ def known_eval_datasets() -> list:
     return list(EVAL_SPECS) + list(NTIRE_EVAL) + list(OPENFAKE_EVAL) + ["folders"]
 
 
-def _openfake_eval_dataset(dataset: str):
+def _take_stratified(files: List[str], n: int, rng: random.Random) -> List[str]:
+    """Round-robin across parent-dir generators so small buckets still appear."""
+    if n >= len(files):
+        return list(files)
+    by_gen: Dict[str, List[str]] = defaultdict(list)
+    for path in files:
+        by_gen[Path(path).parent.name].append(path)
+    gens = sorted(by_gen)
+    for gen in gens:
+        rng.shuffle(by_gen[gen])
+    picked: List[str] = []
+    cursor = {gen: 0 for gen in gens}
+    while len(picked) < n:
+        progressed = False
+        for gen in gens:
+            i = cursor[gen]
+            if i < len(by_gen[gen]):
+                picked.append(by_gen[gen][i])
+                cursor[gen] = i + 1
+                progressed = True
+                if len(picked) >= n:
+                    break
+        if not progressed:
+            break
+    return picked
+
+
+def _subset_openfake_parts(
+    parts: List[FolderDataset], max_samples: int, seed: int,
+) -> None:
+    """In-place class-balanced cap. Mutates each part's ``files`` list."""
+    nonempty = [p for p in parts if p.files]
+    if not nonempty or max_samples <= 0:
+        return
+    per_class = max_samples // len(nonempty)
+    leftover = max_samples - per_class * len(nonempty)
+    rng = random.Random(seed)
+    for i, part in enumerate(sorted(nonempty, key=lambda p: p.label)):
+        budget = per_class + (1 if i < leftover else 0)
+        part.files = _take_stratified(part.files, budget, rng)
+
+
+def _openfake_eval_dataset(dataset: str, max_samples: Optional[int] = None):
     from .paths import openfake_dir
 
     root = openfake_dir() / OPENFAKE_EVAL[dataset]
@@ -255,12 +305,23 @@ def _openfake_eval_dataset(dataset: str):
             f"uv run scripts/openfake.py holdout --config "
             f"{'reddit' if dataset == 'openfake_reddit' else 'core'}"
         )
+    n_full = sum(len(p) for p in parts)
+    cap = OPENFAKE_EVAL_MAX if max_samples is None else int(max_samples)
+    if cap > 0 and n_full > cap:
+        _subset_openfake_parts(parts, cap, OPENFAKE_EVAL_SEED)
+        n_keep = sum(len(p) for p in parts)
+        print(
+            f"[eval.{dataset}] subset {n_keep}/{n_full} "
+            f"(class-balanced, stratified by generator)",
+            flush=True,
+        )
     return torch.utils.data.ConcatDataset(parts)
 
 
-def _build_eval_dataset(dataset, real_dirs=None, fake_dirs=None):
+def _build_eval_dataset(dataset, real_dirs=None, fake_dirs=None,
+                        max_samples: Optional[int] = None):
     if dataset in OPENFAKE_EVAL:
-        return _openfake_eval_dataset(dataset)
+        return _openfake_eval_dataset(dataset, max_samples=max_samples)
     if dataset == "folders":
         parts = []
         if real_dirs:
@@ -311,14 +372,19 @@ def _single_pass(model, cfg_dict, perturbation: Optional[str], augmented: bool,
                  real_dirs: Optional[List[str]] = None,
                  fake_dirs: Optional[List[str]] = None,
                  error_bank: Optional[ErrorBank] = None) -> dict:
-    ds = _build_eval_dataset(dataset, real_dirs=real_dirs, fake_dirs=fake_dirs)
+    ds = _build_eval_dataset(
+        dataset, real_dirs=real_dirs, fake_dirs=fake_dirs, max_samples=max_samples,
+    )
+    # OpenFake already applied the cap when building the subset; do not
+    # crop again in walk order (that would be all-reals-then-fakes).
+    chunk_cap = None if dataset in OPENFAKE_EVAL else max_samples
 
     pert_name = perturbation or ("pangram" if augmented else "clean")
     perturb_fn = (lambda im: apply_perturbation(im, pert_name)) if pert_name != "clean" else None
 
     probs, labels, archs, distorted, dist_keys = [], [], [], [], []
     errors_fp, errors_fn = [], []
-    for chunk in tqdm(_chunked(ds, batch_size, max_samples),
+    for chunk in tqdm(_chunked(ds, batch_size, chunk_cap),
                       desc=f"eval[{pert_name}]", unit="img", disable=None):
         imgs = [load_sample_image(s) for s in chunk]
         if perturb_fn is not None:

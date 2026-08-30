@@ -26,6 +26,7 @@ grad_checkpointing: false
 ema_decay: 0.999
 eval_every: 2000
 eval_datasets: [ntire_test, openfake_test]
+eval_openfake_max: 4096     # full holdout is ~90k; 0 = all
 log_every: 10
 heatmap_every: 50
 heatmap_n: 4
@@ -141,11 +142,11 @@ augment:
 
 composite:
   prob: 0.60                 # more fakes become overlays
-  fake_on_real: 0.50
-  real_on_fake: 0.35         # inverted labels — as important as FoR
-  fake_on_fake: 0.15         # keep some seam-negative
-  real_real_fraction: 0.20   # RoR ≈ 12% of reals; do not match `prob`
-  max_overlays: 3            # n ~ Uniform{1,...,k} pastes per composite
+  fake_on_real: 1.0          # four pairings equal — quota-allocated per batch
+  real_on_fake: 1.0
+  fake_on_fake: 1.0
+  real_on_real: 1.0          # RoR count matches each fake pairing; page 1:1
+  max_overlays: 5            # n ~ Uniform{1,...,k} pastes per composite
   patch_loss_weight: 1.0     # patch probe trains on composite heatmaps
   balance_patch: true            # pos_weight = n_real_patches / n_fake_patches
   mode: mixed

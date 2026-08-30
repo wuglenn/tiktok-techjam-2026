@@ -155,18 +155,27 @@ class CompositeConfig:
       real_on_real  - real crop over a real base (label stays real;
                       blending alone is never a fake cue)
 
-    Overlays are crops of the source (own scale / aspect / flip) pasted
-    into random regions, and a composited sample receives a stack of
-    1..max_overlays pastes; each paste Porter-Duff-overs per-pixel labels
-    with the RGB (a 40% blend is a 0.4 target), then pools to patches.
-    The page target is binary (any visible AI → fake). Already-composited
-    slots may be sources; their label maps travel with the crop.
+    Overlays are large, difficulty-varying crops of the source (easy ≈
+    the full frame, hard still a substantial region — not a texture chip)
+    pasted into random regions, and a composited sample receives a stack
+    of 1..max_overlays pastes. Each paste independently draws an overlay
+    style (alpha blend or hard paste) and a feather (hard or soft), so
+    one stacked image can mix all four combinations. RGB uses that
+    alpha; labels follow occupancy, not blend opacity (a 40% mix is
+    still fake, not a 0.4 target). Soft-feather seams stay mixed after
+    average-pool; the page target is binary (any visible AI → fake).
+    Already-composited slots may be sources; their label maps travel
+    with the crop.
 
     prob               - chance a fake sample is composited (one of the
                          three label-1 pairings above)
-    real_real_fraction - chance a real sample is composited, relative to
-                         `prob` (real-on-real keeps label 0, so the batch
-                         class balance is unchanged)
+    real_on_real      - weight of RoR relative to the three fake pairings
+                        (equal weights => equal pairing counts; RoR is
+                        clipped to the number of reals so page labels
+                        stay 1:1 even when the batch is class-skewed)
+    real_real_fraction - fallback RoR count as a fraction of composited
+                         fakes when `real_on_real` is 0, or the per-real
+                         rate when no fake pairing is available
     fake_on_real / real_on_fake / fake_on_fake
                       - weights splitting the composites on fake samples
                         between the three label-1 pairings
@@ -174,23 +183,27 @@ class CompositeConfig:
     patch_loss_weight - weight of the per-patch BCE in the total loss
     balance_patch     - pos_weight patch BCE by n_real/n_fake patches so
                         sparse FoR fake crops are not drowned out
-    mode              - how each overlay is laid over the base:
-                         "blend" soft alpha compositing (diffusion-style
-                                seamless mixes)
-                         "paste" hard-edged opaque overlay with a feathered
-                                border (sticker / screenshot-style)
+    mode              - overlay opacity, drawn independently per paste:
+                         "blend" semi-transparent mix (alpha in [0.75, 1])
+                         "paste" opaque overlay (sticker / screenshot)
+                         "mixed" randomly choose per overlay
+    feather           - edge of the overlay, drawn independently per paste:
+                         "hard"  crisp patch-aligned rectangle
+                         "soft"  bilinear fade across the shared cell edge
                          "mixed" randomly choose per overlay
     """
 
     prob: float = 0.25
-    real_real_fraction: float = 0.25
-    fake_on_real: float = 0.5
-    real_on_fake: float = 0.25
-    fake_on_fake: float = 0.25
-    max_overlays: int = 3
+    real_real_fraction: float = 1.0 / 3.0
+    fake_on_real: float = 1.0
+    real_on_fake: float = 1.0
+    fake_on_fake: float = 1.0
+    real_on_real: float = 1.0
+    max_overlays: int = 5
     patch_loss_weight: float = 0.5
     balance_patch: bool = True
     mode: str = "mixed"
+    feather: str = "mixed"
 
 
 @dataclass
@@ -254,6 +267,9 @@ class TrainConfig:
     # Official NTIRE public test is 2.5k labelled images from
     # deepfakesMSU/NTIRE-RobustAIGenDetection-test-public.
     eval_datasets: List[str] = field(default_factory=list)
+    # OpenFake holdout is ~90k images. Periodic evals use this many, class-
+    # balanced and stratified by generator. 0 = the full holdout.
+    eval_openfake_max: int = 4096
     log_every: int = 20
     seed: int = 0
     out_dir: str = "runs/seer"

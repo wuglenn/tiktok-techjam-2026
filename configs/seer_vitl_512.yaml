@@ -44,8 +44,8 @@
 backbone: facebook/dinov3-vitl16-pretrain-lvd1689m
 pretrained: true
 res: 512
-batch_size: 54
-grad_accum: 2               # effective batch 108; loss is averaged over the microbatches
+batch_size: 56
+grad_accum: 3               # effective batch 168; loss is averaged over the microbatches
 max_steps: 60000
 lr: 5.0e-5              # peak backbone LR (top layers after warmup; LLRD scales earlier)
 head_lr: 1.0e-4
@@ -62,6 +62,7 @@ eval_every: 2000
 # openfake_test: OpenFake core/test - generators AND real sources both unseen
 # (scripts/openfake.py holdout). Skipped with a log line until it is on disk.
 eval_datasets: [ntire_test, openfake_test]
+eval_openfake_max: 4096     # full holdout is ~90k; 0 = all
 log_every: 50
 heatmap_every: 50
 heatmap_n: 4
@@ -180,11 +181,12 @@ augment:
 
 composite:
   prob: 0.60                 # more fakes become overlays
-  fake_on_real: 0.50
-  real_on_fake: 0.35         # inverted labels — as important as FoR
-  fake_on_fake: 0.15         # keep some seam-negative
-  real_real_fraction: 0.20   # RoR ≈ 12% of reals; do not match `prob`
-  max_overlays: 3            # n ~ Uniform{1,...,k} pastes per composite
+  fake_on_real: 1.0          # four pairings equal — quota-allocated per batch
+  real_on_fake: 1.0
+  fake_on_fake: 1.0
+  real_on_real: 1.0          # RoR count matches each fake pairing; page 1:1
+  max_overlays: 5            # n ~ Uniform{1,...,k} pastes per composite
   patch_loss_weight: 1.0
   balance_patch: true            # pos_weight = n_real_patches / n_fake_patches
-  mode: mixed                # blend (seamless) + paste (hard overlay)
+  mode: mixed                # per overlay: alpha blend or hard overlay
+  feather: mixed             # per overlay: hard edge or soft fade

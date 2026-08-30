@@ -50,8 +50,8 @@ RUNS = [
      ["composite.prob=1.0", "composite.real_real_fraction=1.0",
       "composite.fake_on_real=0.0", "composite.real_on_fake=0.0",
       "composite.fake_on_fake=0.0"]),
-    ("mix", "the default training distribution (all pairings, weights 0.5/0.25/0.25)",
-     ["composite.prob=1.0", "composite.real_real_fraction=1.0"]),
+    ("mix", "the default training distribution (FoR/RoF/FoF/RoR equal)",
+     ["composite.prob=1.0"]),
 ]
 
 
