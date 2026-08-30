@@ -59,8 +59,13 @@ def test_probe_config_keeps_sid_synthetic_only():
     assert normalize_label(2, sid.label_map) != 1
 
 
-def test_train_configs_exclude_comfor_eval():
-    from seer.data import assert_not_comfor_eval_train, build_train_dataset
+def test_train_configs_exclude_held_out_sets():
+    from seer.data import (
+        assert_not_comfor_eval_train,
+        assert_not_held_out_train,
+        build_train_dataset,
+        is_held_out_train_ref,
+    )
     from seer.config import SourceSpec, TrainConfig, DataConfig
 
     for path in ("configs/seer_vitl_512.yaml", "configs/seer_probe.yaml"):
@@ -68,6 +73,9 @@ def test_train_configs_exclude_comfor_eval():
         for s in cfg.data.sources:
             assert "eval" not in (s.dataset or "").lower()
             assert not any("comfor-eval" in d.lower() for d in s.local_dirs)
+            assert not any("coco-val2017" in d.lower() for d in (s.real_dirs + s.fake_dirs + s.local_dirs))
+            assert "wildfake" not in (s.dataset or "").lower()
+            assert "coco-val2017" not in (s.name or "")
 
     assert_not_comfor_eval_train("OwensLab/CommunityForensics-Small", ["/workspace/data/commfor-small"])
     try:
@@ -78,6 +86,29 @@ def test_train_configs_exclude_comfor_eval():
     try:
         assert_not_comfor_eval_train("", ["/workspace/data/comfor-eval"])
         raise AssertionError("eval local_dirs should be rejected")
+    except ValueError:
+        pass
+
+    assert is_held_out_train_ref("/workspace/data/coco-val2017/000000000139.jpg")
+    assert is_held_out_train_ref("/data/val2017/000000000139.jpg")
+    assert is_held_out_train_ref("/workspace/data/wildfake-dalle/Images/Diffusion_based/DALLE/Advanced/a.png")
+    assert not is_held_out_train_ref("/workspace/data/open-images-v7/validation/abc.jpg")
+    assert not is_held_out_train_ref("/workspace/data/frontier-fakes")
+
+    try:
+        assert_not_held_out_train(spec=SourceSpec(
+            name="coco", type="folders", real_dirs=["/workspace/data/coco-val2017"],
+        ))
+        raise AssertionError("coco-val2017 should be rejected")
+    except ValueError as exc:
+        assert "demonstration" in str(exc) or "held-out" in str(exc)
+
+    try:
+        assert_not_held_out_train(spec=SourceSpec(
+            name="dalle", type="folders",
+            fake_dirs=["/workspace/data/wildfake-dalle"],
+        ))
+        raise AssertionError("wildfake-dalle should be rejected")
     except ValueError:
         pass
 

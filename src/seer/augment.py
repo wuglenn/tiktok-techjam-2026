@@ -93,10 +93,9 @@ def center_crop_resize(img: Image.Image, res: int, scale: float = 0.8) -> Image.
 def train_transform(img: Image.Image, res: int, rng: random.Random, cfg) -> torch.Tensor:
     """PIL -> augmented, normalized (C, res, res) float tensor.
 
-    Parameter levels are drawn from the benchmark robustness protocols
-    (JPEG q in {90,70,50,30}, blur sigma in {0.5,1,2}, noise sigma in
-    {0.02,0.05,0.10}, resize 0.5x/0.25x, jitter +/-20%, crop 80%) plus
-    WebP and grayscale for extra wild-simulation coverage.
+    Parameter levels cover the official eval table and go harder (NTIRE
+    2026 / arxiv:2604.11487): JPEG down to q=10, blur σ=4, noise 0.20,
+    0.125× resize, plus impulse / motion / quantize / channel-shift.
     """
     img = img.convert("RGB")
 
@@ -129,6 +128,12 @@ def train_transform(img: Image.Image, res: int, rng: random.Random, cfg) -> torc
 
     if rng.random() < cfg.blur_prob:
         img = img.filter(ImageFilter.GaussianBlur(rng.choice(cfg.blur_sigma)))
+
+    extra_p = float(getattr(cfg, "extra_distort_prob", 0.0) or 0.0)
+    extra_n = max(1, int(getattr(cfg, "extra_distort_max", 1) or 1))
+    if extra_p > 0 and rng.random() < extra_p:
+        for _ in range(rng.randint(1, extra_n)):
+            img = _extra_train_distort(img, rng)
 
     t = _to_tensor(img)
 
@@ -190,8 +195,81 @@ def _jitter_perturb(img: Image.Image, amount: float = 0.2) -> Image.Image:
     return img
 
 
-PERTURBATIONS = {
-    # name -> (fn, description); applied deterministically to BOTH classes
+def _impulse_noise(img: Image.Image, amount: float = 0.02, rng: Optional[random.Random] = None) -> Image.Image:
+    """Salt-and-pepper (NTIRE train: impulse noise)."""
+    rng = rng or random
+    arr = np.array(img)
+    h, w = arr.shape[:2]
+    n = max(1, int(round(h * w * float(amount))))
+    ys = [rng.randrange(h) for _ in range(n)]
+    xs = [rng.randrange(w) for _ in range(n)]
+    for y, x in zip(ys, xs):
+        arr[y, x] = 0 if rng.random() < 0.5 else 255
+    return Image.fromarray(arr)
+
+
+def _quantize(img: Image.Image, colors: int = 32) -> Image.Image:
+    """Color quantization (NTIRE train)."""
+    dither = getattr(Image, "FLOYDSTEINBERG", 1)
+    return img.quantize(colors=max(2, int(colors)), dither=dither).convert("RGB")
+
+
+def _motion_blur(img: Image.Image, length: int = 9) -> Image.Image:
+    """Horizontal box motion blur (NTIRE val: motion blur)."""
+    arr = np.asarray(img, dtype=np.float32)
+    k = max(3, int(length))
+    pad = k // 2
+    p = np.pad(arr, ((0, 0), (pad, pad), (0, 0)), mode="edge")
+    cs = np.cumsum(p, axis=1, dtype=np.float32)
+    left = np.zeros_like(cs)
+    left[:, 1:] = cs[:, :-1]
+    win = (cs[:, k - 1:] - left[:, : cs.shape[1] - (k - 1)]) / k
+    out = win[:, : arr.shape[1]]
+    if out.shape[1] < arr.shape[1]:
+        out = np.pad(out, ((0, 0), (0, arr.shape[1] - out.shape[1]), (0, 0)), mode="edge")
+    return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8))
+
+
+def _color_shift(img: Image.Image, delta: int = 20, channel: int = 0) -> Image.Image:
+    """RGB channel shift (NTIRE train: color shift)."""
+    arr = np.asarray(img, dtype=np.int16)
+    c = int(channel) % 3
+    arr[:, :, c] = np.clip(arr[:, :, c] + int(delta), 0, 255)
+    return Image.fromarray(arr.astype(np.uint8))
+
+
+def _pixelate(img: Image.Image, scale: float = 0.125) -> Image.Image:
+    """Nearest-neighbor down/up (NTIRE val: pixelation)."""
+    w, h = img.size
+    sw, sh = max(1, int(round(w * scale))), max(1, int(round(h * scale)))
+    return img.resize((sw, sh), Image.NEAREST).resize((w, h), Image.NEAREST)
+
+
+def _extra_train_distort(img: Image.Image, rng: random.Random) -> Image.Image:
+    """One NTIRE-style op harder than the Pangram eval table."""
+    kind = rng.choice((
+        "jpeg", "blur", "impulse", "quantize", "motion", "shift", "pixelate", "bright",
+    ))
+    if kind == "jpeg":
+        return jpeg_recompress(img, rng.choice((20, 10)))
+    if kind == "blur":
+        return img.filter(ImageFilter.GaussianBlur(rng.choice((3.0, 4.0))))
+    if kind == "impulse":
+        return _impulse_noise(img, rng.choice((0.01, 0.03)), rng)
+    if kind == "quantize":
+        return _quantize(img, rng.choice((64, 32, 16)))
+    if kind == "motion":
+        return _motion_blur(img, rng.choice((5, 9, 13)))
+    if kind == "shift":
+        return _color_shift(img, rng.choice((-40, -20, 20, 40)), rng.randrange(3))
+    if kind == "pixelate":
+        return _pixelate(img, rng.choice((0.125, 0.25)))
+    from PIL import ImageEnhance
+    return ImageEnhance.Brightness(img).enhance(1.0 + rng.choice((-0.35, 0.35)))
+
+
+# Official eval table (Pangram / GenImage / OmniAID). `--perturbation all`.
+BENCHMARK_PERTURBATIONS = {
     "clean": (lambda im: im.convert("RGB"), "no perturbation"),
     "jpeg90": (lambda im: jpeg_recompress(im, 90), "JPEG quality 90"),
     "jpeg70": (lambda im: jpeg_recompress(im, 70), "JPEG quality 70"),
@@ -207,8 +285,42 @@ PERTURBATIONS = {
     "noise0.10": (lambda im: _noise_perturb(im, 0.10), "Gaussian noise sigma 0.10"),
     "jitter20": (lambda im: _jitter_perturb(im, 0.2), "brightness/contrast/saturation +20%"),
     "crop80": (lambda im: center_crop(im, 0.8), "center crop 80%"),
+}
+
+# Stronger / NTIRE-inspired levels (arxiv:2604.11487). `--perturbation extra`.
+HARD_PERTURBATIONS = {
+    "jpeg20": (lambda im: jpeg_recompress(im, 20), "JPEG quality 20"),
+    "jpeg10": (lambda im: jpeg_recompress(im, 10), "JPEG quality 10"),
+    "blur4.0": (lambda im: im.filter(ImageFilter.GaussianBlur(4.0)), "Gaussian blur sigma 4.0"),
+    "resize0.125": (lambda im: _resize_perturb(im, 0.125), "resize 0.125x then upscale"),
+    "noise0.20": (lambda im: _noise_perturb(im, 0.20), "Gaussian noise sigma 0.20"),
+    "jitter40": (lambda im: _jitter_perturb(im, 0.4), "brightness/contrast/saturation +40%"),
+    "crop60": (lambda im: center_crop(im, 0.6), "center crop 60%"),
+    "impulse0.02": (lambda im: _impulse_noise(im, 0.02, random.Random(0)), "impulse noise 2%"),
+    "quantize32": (lambda im: _quantize(im, 32), "color quantization 32"),
+    "motion9": (lambda im: _motion_blur(im, 9), "motion blur length 9"),
+    "shift20": (lambda im: _color_shift(im, 20, 0), "RGB channel shift +20"),
+    "pixelate8": (lambda im: _pixelate(im, 0.125), "pixelate 8x"),
+}
+
+PERTURBATIONS = {
+    **BENCHMARK_PERTURBATIONS,
+    **HARD_PERTURBATIONS,
     "pangram": (lambda im: pangram_augment(im), "Pangram augmented protocol (1024px + JPEG q50)"),
 }
+
+
+def perturbation_names(spec: Optional[str]) -> Optional[list]:
+    """Resolve a sweep name to an ordered list of perturbation keys."""
+    if spec in (None, "", "clean"):
+        return None
+    if spec == "all":
+        return list(BENCHMARK_PERTURBATIONS)
+    if spec in ("extra", "hard"):
+        return list(HARD_PERTURBATIONS)
+    if spec in ("all+extra", "all+hard"):
+        return list(dict.fromkeys([*BENCHMARK_PERTURBATIONS, *HARD_PERTURBATIONS]))
+    return None
 
 
 def apply_perturbation(img: Image.Image, name: str) -> Image.Image:

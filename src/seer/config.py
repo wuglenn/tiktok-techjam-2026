@@ -86,6 +86,8 @@ class DataConfig:
     streaming: bool = True
     shuffle_buffer: int = 4096
     max_samples: Optional[int] = None  # cap streamed samples (None = all)
+    # Split evenly across mixture sources (class-balanced per source) and
+    # held out of the train mixture so in-loop eval is not on train images.
     val_max_samples: int = 2048
     val_seed: int = 1
     # Draw real/fake with equal probability, then pick a source that can
@@ -100,15 +102,10 @@ class AugmentConfig:
 
     Symmetric across real/fake so the model cannot solve the task from the
     augmentation itself (e.g. "has JPEG artifacts") and must instead learn
-    generator fingerprints. Parameter levels follow the benchmark
-    robustness protocols (GenImage / OmniAID / Pangram's augmented eval):
-
-      JPEG    q in {90, 70, 50, 30}
-      blur    sigma in {0.5, 1.0, 2.0}
-      resize  0.5x / 0.25x then upscale
-      noise   sigma in {0.02, 0.05, 0.10}
-      jitter  +/-20% brightness/contrast/saturation
-      crop    center crop 80%
+    generator fingerprints. Eval uses the official table (JPEG 90/70/50/30,
+    blur 0.5/1/2, resize 0.5×/0.25×, noise 0.02/0.05/0.10, jitter ±20%,
+    crop 80%). Training goes harder (NTIRE 2026 / arxiv:2604.11487): JPEG
+    to q=10, blur σ=4, 0.125× resize, noise 0.20, plus impulse / motion.
     """
 
     train: bool = True
@@ -119,21 +116,24 @@ class AugmentConfig:
     center_crop_scale: float = 0.8
     # compression
     jpeg_prob: float = 0.75
-    jpeg_quality: List[int] = field(default_factory=lambda: [90, 70, 50, 30])
+    jpeg_quality: List[int] = field(default_factory=lambda: [90, 70, 50, 30, 20, 10])
     webp_prob: float = 0.10
     webp_quality: List[int] = field(default_factory=lambda: [50, 95])
     grayscale_prob: float = 0.05
     # resolution loss
     downscale_prob: float = 0.30
-    downscale_levels: List[float] = field(default_factory=lambda: [0.5, 0.25])
+    downscale_levels: List[float] = field(default_factory=lambda: [0.5, 0.25, 0.125])
     # blur / noise
     blur_prob: float = 0.10
-    blur_sigma: List[float] = field(default_factory=lambda: [0.5, 1.0, 2.0])
+    blur_sigma: List[float] = field(default_factory=lambda: [0.5, 1.0, 2.0, 4.0])
     noise_prob: float = 0.15
-    noise_levels: List[float] = field(default_factory=lambda: [0.02, 0.05, 0.10])
+    noise_levels: List[float] = field(default_factory=lambda: [0.02, 0.05, 0.10, 0.20])
     # photometric
     color_jitter_prob: float = 0.30
-    color_jitter: float = 0.2  # +/-20%
+    color_jitter: float = 0.3  # +/-30% (eval table stays +/-20%)
+    # NTIRE-style extras stacked after the base augs (1..max ops)
+    extra_distort_prob: float = 0.35
+    extra_distort_max: int = 2
 
 
 @dataclass
@@ -263,6 +263,10 @@ class TrainConfig:
     heatmap_every: int = 0  # dump predicted heatmaps; 0 = off
     heatmap_n: int = 4  # rows in the joint heatmap grid
     ckpt_every: int = 500  # write last.pt between evals; 0 = only at eval_every
+    # Dump FP/FN JPEGs + provenance JSONL at eval (0 = off). Images come from
+    # the all-source held-out val slice and any eval_datasets.
+    misclass_every: int = 0
+    misclass_max: int = 64  # per kind (fp/fn) per split, worst-first
 
     data: DataConfig = field(default_factory=DataConfig)
     augment: AugmentConfig = field(default_factory=AugmentConfig)

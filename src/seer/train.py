@@ -23,12 +23,14 @@ from .data import (
     Prefetcher,
     ThreadedSampleQueue,
     build_train_dataset,
-    build_val_dataset,
+    collect_held_out_val,
     count_parquet_rows,
     parquet_files,
+    set_holdout,
 )
 from .eval import compute_metrics, eval_named_dataset
 from .heatmap import save_batch_heatmaps
+from .misclass import dump_misclassified
 from .model import SeerDetector, EMA, build_param_groups, detection_loss, save_checkpoint
 from .optim import build_optimizer, group_param_counts
 
@@ -124,25 +126,33 @@ def _val_cache_key(cfg: TrainConfig) -> tuple:
 
 
 def _cached_val_samples(cfg: TrainConfig) -> list:
-    """Collect the val slice once; later evals reuse the same lazy samples."""
+    """Collect the all-source val slice once and hold those IDs out of train."""
     key = _val_cache_key(cfg)
     hit = _VAL_SAMPLE_CACHE.get(key)
     if hit is not None:
+        set_holdout(hit)
         return hit
-    ds = build_val_dataset(cfg)
-    out = []
-    for sample in ds:
-        out.append(sample)
-        if len(out) >= max(1, int(cfg.data.val_max_samples)):
-            break
+    out = collect_held_out_val(cfg)
+    set_holdout(out)
     _VAL_SAMPLE_CACHE[key] = out
-    _log(f"[data] cached {len(out)} val samples for later evals")
+    by: dict = {}
+    for sample in out:
+        by[sample.get("source") or "?"] = by.get(sample.get("source") or "?", 0) + 1
+    mix = " ".join(f"{k}={v}" for k, v in sorted(by.items()))
+    _log(f"[data] held out {len(out)} val images ({mix or 'none'})")
     return out
 
 
 @torch.no_grad()
-def quick_val(model: SeerDetector, cfg: TrainConfig, device) -> dict:
-    """Metrics on a cached train-distribution slice (NTIRE when available)."""
+def quick_val(
+    model: SeerDetector,
+    cfg: TrainConfig,
+    device,
+    *,
+    dump_dir: Optional[str] = None,
+    step: int = 0,
+) -> dict:
+    """Metrics on the held-out all-source slice (not the official test)."""
     samples = _cached_val_samples(cfg)
     builder = BatchBuilder(cfg, train=False, patch_grid=model.patch_grid(cfg.res), seed=1234)
     bs = max(1, int(cfg.batch_size))
@@ -154,10 +164,10 @@ def quick_val(model: SeerDetector, cfg: TrainConfig, device) -> dict:
             out = model(images)
         probs.extend(torch.sigmoid(out["logits"]).float().cpu().tolist())
         labels.extend(batch["labels"].tolist())
-    if not probs or len(set(labels)) < 2:
+    if not probs or len(set(int(y) for y in labels)) < 2:
         return {"val_balanced_acc": float("nan")}
     m = compute_metrics(np.array(probs), np.array(labels))
-    return {
+    out = {
         "val_balanced_acc": m["macro_accuracy"],
         "val_tpr": m["recall"],
         "val_tnr": 1.0 - m["fpr"],
@@ -166,10 +176,35 @@ def quick_val(model: SeerDetector, cfg: TrainConfig, device) -> dict:
         "val_mAP": m["mAP"],
         "val_precision": m["precision"],
         "val_recall": m["recall"],
+        "val_n": int(m["n"]),
+        "val_fpr": m["fpr"],
+        "val_fnr": m["fnr"],
     }
+    if dump_dir:
+        stats = dump_misclassified(
+            dump_dir, samples, probs, labels,
+            step=step, split="val",
+            max_per_kind=int(getattr(cfg, "misclass_max", 64) or 0),
+        )
+        out["misclassified"] = {
+            "n_fp": stats["n_fp"], "n_fn": stats["n_fn"],
+            "saved_fp": stats["saved_fp"], "saved_fn": stats["saved_fn"],
+        }
+        _log(
+            f"[misclass.val] {stats['n_fp']} fp / {stats['n_fn']} fn "
+            f"(saved {stats['saved_fp']}+{stats['saved_fn']}) -> {dump_dir}"
+        )
+    return out
 
 
-def _run_held_out_evals(model: SeerDetector, cfg: TrainConfig, device) -> dict:
+def _run_held_out_evals(
+    model: SeerDetector,
+    cfg: TrainConfig,
+    device,
+    *,
+    dump_root: Optional[str] = None,
+    step: int = 0,
+) -> dict:
     """Official labelled sets (NTIRE public test, …). Does not choose best.pt."""
     extra = {}
     for name in getattr(cfg, "eval_datasets", None) or []:
@@ -179,6 +214,9 @@ def _run_held_out_evals(model: SeerDetector, cfg: TrainConfig, device) -> dict:
                 res=cfg.res,
                 device=device,
                 batch_size=min(16, max(1, int(cfg.batch_size))),
+                dump_dir=os.path.join(dump_root, name) if dump_root else None,
+                step=step,
+                misclass_max=int(getattr(cfg, "misclass_max", 64) or 0),
             )
         except FileNotFoundError as exc:
             _log(f"[eval.{name}] skipped: {exc}")
@@ -188,7 +226,8 @@ def _run_held_out_evals(model: SeerDetector, cfg: TrainConfig, device) -> dict:
             continue
         extra[name] = {
             k: held[k] for k in
-            ("n", "macro_accuracy", "f1", "auroc", "mAP", "fpr", "fnr")
+            ("n", "macro_accuracy", "f1", "auroc", "mAP", "fpr", "fnr",
+             "robust_auroc", "robust_mAP", "robust_n")
             if k in held
         }
         if held.get("per_distorted"):
@@ -202,11 +241,21 @@ def _run_held_out_evals(model: SeerDetector, cfg: TrainConfig, device) -> dict:
                 f" clean={d['clean']['macro_accuracy']:.4f}"
                 f" distorted={d['distorted']['macro_accuracy']:.4f}"
             )
+        robust = held.get("robust_auroc")
+        if robust is not None and not (isinstance(robust, float) and np.isnan(robust)):
+            split += f" robust_auroc={robust:.4f}"
+        dumped = held.get("misclassified") or {}
+        extra_dump = ""
+        if dumped:
+            extra[name]["misclassified"] = {
+                k: dumped[k] for k in ("n_fp", "n_fn", "saved_fp", "saved_fn") if k in dumped
+            }
+            extra_dump = f" fp={dumped.get('n_fp')} fn={dumped.get('n_fn')}"
         _log(
             f"[eval.{name}] n={held.get('n')} "
             f"macro_acc={held.get('macro_accuracy'):.4f} "
             f"f1={held.get('f1'):.4f} auroc={held.get('auroc'):.4f} "
-            f"mAP={held.get('mAP'):.4f}{split}"
+            f"mAP={held.get('mAP'):.4f}{split}{extra_dump}"
         )
     return extra
 
@@ -270,6 +319,8 @@ def run(cfg: TrainConfig):
     assert n_params < 2_000_000_000, "detector exceeds the 2B parameter budget"
 
     # ------------------------------------------------------------- data
+    _log("[data] collecting held-out val from every source")
+    _cached_val_samples(cfg)
     _log("[data] building train mixture")
     train_ds = build_train_dataset(cfg)
     if getattr(train_ds, "sources", None):
@@ -494,10 +545,24 @@ def run(cfg: TrainConfig):
                     # that is already near capacity from training activations.
                     backup = {k: v.detach().cpu() for k, v in model.state_dict().items()}
                     model.load_state_dict(ema.shadow)
-                metrics = quick_val(model, cfg, device)
-                metrics.update({"step": step + 1})
+                n_done = step + 1
+                do_dump = bool(getattr(cfg, "misclass_every", 0)) and (
+                    n_done % int(cfg.misclass_every) == 0 or n_done == total_steps
+                )
+                dump_root = (
+                    os.path.join(cfg.out_dir, "misclassified", f"step_{n_done:06d}")
+                    if do_dump else None
+                )
+                metrics = quick_val(
+                    model, cfg, device,
+                    dump_dir=os.path.join(dump_root, "val") if dump_root else None,
+                    step=n_done,
+                )
+                metrics.update({"step": n_done})
                 _log(f"[eval] {metrics}")
-                extra = _run_held_out_evals(model, cfg, device)
+                extra = _run_held_out_evals(
+                    model, cfg, device, dump_root=dump_root, step=n_done,
+                )
                 if extra:
                     metrics["held_out"] = extra
             finally:

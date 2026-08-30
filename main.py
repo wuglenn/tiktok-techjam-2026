@@ -29,9 +29,8 @@ def main(argv=None):
     p_eval.add_argument("--augmented", action="store_true",
                         help="Pangram augmented protocol (1024px + JPEG q50)")
     p_eval.add_argument("--perturbation", default=None,
-                        help="benchmark perturbation (jpeg90/70/50/30, blur0.5/1.0/2.0, "
-                             "resize0.5/0.25, noise0.02/0.05/0.10, jitter20, crop80, "
-                             "pangram) or 'all' for a robustness sweep")
+                        help="named perturbation, or all (official table) / extra "
+                             "(harder NTIRE-style) / all+extra")
     p_eval.add_argument("--hflip-tta", action="store_true")
     p_eval.add_argument("--max-samples", type=int, default=None)
     p_eval.add_argument("--batch-size", type=int, default=16)

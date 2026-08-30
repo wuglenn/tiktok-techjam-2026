@@ -24,7 +24,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from .augment import PERTURBATIONS, apply_perturbation, eval_transform
+from .augment import PERTURBATIONS, apply_perturbation, eval_transform, perturbation_names
 from .data import ComforStream, FolderDataset, NtireStream, load_sample_image
 from .model import load_checkpoint
 
@@ -147,6 +147,10 @@ def _build_eval_dataset(dataset, real_dirs=None, fake_dirs=None):
             return hit
         stream = NtireStream(split=NTIRE_EVAL[dataset]["split"], seed=0, cycle=False)
         samples = list(stream)
+        for sample in samples:
+            sample.setdefault("source", dataset)
+            sample.setdefault("source_type", "ntire")
+            sample.setdefault("dataset", f"ntire-{NTIRE_EVAL[dataset]['split']}")
         _NTIRE_SAMPLE_CACHE[dataset] = samples
         print(f"[data] cached {len(samples)} {dataset} samples for later evals", flush=True)
         return samples
@@ -157,16 +161,31 @@ def _build_eval_dataset(dataset, real_dirs=None, fake_dirs=None):
                          shuffle_buffer=1024, max_samples=None, seed=0)
 
 
+def _tag_eval_sample(sample: dict, dataset: str) -> dict:
+    sample.setdefault("source", dataset)
+    sample.setdefault("dataset", dataset)
+    if dataset in NTIRE_EVAL:
+        sample.setdefault("source_type", "ntire")
+    elif str(dataset).startswith("comfor"):
+        sample.setdefault("source_type", "comfor")
+    elif dataset == "folders":
+        sample.setdefault("source_type", "folders")
+    return sample
+
+
 @torch.no_grad()
 def _single_pass(model, cfg_dict, perturbation: Optional[str], augmented: bool,
                  dataset: str, batch_size: int, max_samples: Optional[int],
-                 hflip_tta: bool, res: int, device) -> dict:
+                 hflip_tta: bool, res: int, device,
+                 dump_dir: Optional[str] = None, step: int = 0,
+                 misclass_max: int = 0) -> dict:
     ds = _build_eval_dataset(dataset)
 
     pert_name = perturbation or ("pangram" if augmented else "clean")
     perturb_fn = (lambda im: apply_perturbation(im, pert_name)) if pert_name != "clean" else None
 
     probs, labels, archs, distorted, dist_keys = [], [], [], [], []
+    errors_fp, errors_fn = [], []
     for chunk in tqdm(_chunked(ds, batch_size, max_samples),
                       desc=f"eval[{pert_name}]", unit="img", disable=None):
         imgs = [load_sample_image(s) for s in chunk]
@@ -179,11 +198,20 @@ def _single_pass(model, cfg_dict, perturbation: Optional[str], augmented: bool,
             if hflip_tta:
                 out_f = model(torch.flip(x, dims=[-1]))
                 p = 0.5 * (p + torch.sigmoid(out_f["logits"]).float())
-        probs.extend(p.cpu().tolist())
-        labels.extend(int(s["label"]) for s in chunk)
+        p_list = p.cpu().tolist()
+        y_list = [int(s["label"]) for s in chunk]
+        probs.extend(p_list)
+        labels.extend(y_list)
         archs.extend(s.get("architecture", "") for s in chunk)
         distorted.extend("distorted" if s.get("is_distorted") else "clean" for s in chunk)
         dist_keys.extend(_distortion_key(s) for s in chunk)
+        if dump_dir and misclass_max:
+            for sample, prob, y in zip(chunk, p_list, y_list):
+                _tag_eval_sample(sample, dataset)
+                if y == 0 and prob >= 0.5:
+                    errors_fp.append((sample, float(prob)))
+                elif y == 1 and prob < 0.5:
+                    errors_fn.append((sample, float(prob)))
 
     probs = np.array(probs)
     labels = np.array(labels)
@@ -194,10 +222,24 @@ def _single_pass(model, cfg_dict, perturbation: Optional[str], augmented: bool,
     metrics["per_architecture"] = _group_metrics(probs, labels, archs)
     if any(s != "clean" for s in distorted):
         metrics["per_distorted"] = _group_metrics(probs, labels, distorted)
+        distorted_m = metrics["per_distorted"].get("distorted") or {}
+        # Robust AUROC = ROC AUC on the distorted subset only (NTIRE protocol).
+        metrics["robust_auroc"] = distorted_m.get("auroc", float("nan"))
+        metrics["robust_mAP"] = distorted_m.get("mAP", float("nan"))
+        metrics["robust_n"] = int(distorted_m.get("n") or 0)
         metrics["per_distortion"] = {
             k: v for k, v in _group_metrics(probs, labels, dist_keys).items()
             if v["n"] >= 20
         }
+    if dump_dir and misclass_max:
+        from .misclass import dump_error_lists
+
+        errors_fp.sort(key=lambda t: -t[1])
+        errors_fn.sort(key=lambda t: t[1])
+        metrics["misclassified"] = dump_error_lists(
+            dump_dir, errors_fp, errors_fn,
+            step=step, split=dataset, max_per_kind=misclass_max,
+        )
     return metrics
 
 
@@ -210,6 +252,9 @@ def eval_named_dataset(
     device,
     batch_size: int = 16,
     max_samples: Optional[int] = None,
+    dump_dir: Optional[str] = None,
+    step: int = 0,
+    misclass_max: int = 0,
 ) -> dict:
     """Score one named eval set (used from the training loop and CLI)."""
     return _single_pass(
@@ -223,6 +268,9 @@ def eval_named_dataset(
         hflip_tta=False,
         res=res,
         device=device,
+        dump_dir=dump_dir,
+        step=step,
+        misclass_max=misclass_max,
     )
 
 
@@ -251,20 +299,23 @@ def evaluate_checkpoint(
                     batch_size=batch_size, max_samples=max_samples,
                     hflip_tta=hflip_tta, res=res, device=device)
 
-    if perturbation == "all":
+    sweep = perturbation_names(perturbation)
+    if sweep:
         results = {}
-        for name in PERTURBATIONS:
+        for name in sweep:
             m = _single_pass(perturbation=name, augmented=False, **pass_kwargs())
             results[name] = {k: m[k] for k in
                              ("macro_accuracy", "mAP", "auroc", "f1", "precision",
                               "recall", "accuracy", "fpr", "fnr", "n")}
-        metrics = dict(results["clean"])
+        metrics = dict(results.get("clean") or next(iter(results.values())))
         metrics["perturbation_sweep"] = results
         _print_robustness_table(results)
     else:
         if perturbation is not None and perturbation not in PERTURBATIONS:
-            raise ValueError(f"Unknown perturbation '{perturbation}'. "
-                             f"Available: {list(PERTURBATIONS)} or 'all'")
+            raise ValueError(
+                f"Unknown perturbation '{perturbation}'. "
+                f"Available: {list(PERTURBATIONS)} or all / extra / all+extra"
+            )
         metrics = _single_pass(perturbation=perturbation, augmented=augmented, **pass_kwargs())
 
     metrics["checkpoint"] = checkpoint
@@ -306,6 +357,8 @@ def _print_report(m: dict, dataset: str):
     print(f"  macro accuracy : {_fmt(m['macro_accuracy'])}")
     print(f"  mAP            : {_fmt(m['mAP'])}")
     print(f"  AUROC          : {_fmt(m['auroc'])}")
+    if m.get("robust_auroc") is not None:
+        print(f"  robust AUROC   : {_fmt(m['robust_auroc'])}  (distorted n={m.get('robust_n', 0)})")
     print(f"  F1             : {_fmt(m['f1'])}")
     print(f"  precision / rec: {_fmt(m.get('precision'))} / {_fmt(m.get('recall'))}")
     print(f"  accuracy       : {_fmt(m['accuracy'])}")
@@ -359,7 +412,8 @@ def main(argv=None):
     p.add_argument("--augmented", action="store_true",
                    help="apply the Pangram augmented protocol (1024px + JPEG q50)")
     p.add_argument("--perturbation", default=None,
-                   help=f"benchmark perturbation: one of {list(PERTURBATIONS)} or 'all'")
+                   help="one of the named perturbations, or all / extra / all+extra "
+                        "(all = official JPEG/blur/resize/noise/jitter/crop table)")
     p.add_argument("--hflip-tta", action="store_true")
     p.add_argument("--max-samples", type=int, default=None)
     p.add_argument("--batch-size", type=int, default=16)

@@ -13,15 +13,18 @@ data composition mattered more than anything else they tried). Sources:
   * MixtureDataset  - weighted combination of the above, cycled forever.
 
 All samples are normalized to dicts:
-  {image: PIL.Image, label: 0|1, generator: str, architecture: str}
+  {image: PIL.Image, label: 0|1, generator: str, architecture: str,
+   source: str, dataset: str, source_type: str, ...source metadata}
 """
 
+import dataclasses
+import hashlib
 import io
 import os
 import random
 import re
 from pathlib import Path
-from typing import Iterator, List, Mapping, Optional
+from typing import Iterator, List, Mapping, Optional, Set
 
 import torch
 import torch.nn.functional as F
@@ -41,12 +44,35 @@ from .labels import normalize_label
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
+# Image IDs reserved for the in-loop val slice. Training iterators skip them
+# so FP/FN dumps are not scoring images the model just trained on.
+_HOLDOUT_IDS: Set[str] = set()
+_HOLD_SKIP_FALLBACK = 256
+
 # Held-out Community Forensics Eval must never enter the training mixture.
 _COMFOR_EVAL_MARKERS = (
     "communityforensics-eval",
     "comfor-eval",
     "comfor_eval",
 )
+
+# Organisers' demonstration val (not scored): COCO val2017 reals + WildFake
+# DALL·E Advanced fakes. Same rule as CompEval — never train on these.
+_DEMO_VAL_MARKERS = (
+    "coco-val2017",
+    "/val2017/",
+    "wildfake-dalle",
+    "wildfake/dalle",
+    "hy2628982280/wildfake",
+    "dall-e advanced",
+    "dalle advanced",
+    "dalle_advanced",
+    "dalle-advanced",
+    "dalle/advanced",
+    "diffusion_based/dalle",
+)
+
+_HELD_OUT_TRAIN_MARKERS = _COMFOR_EVAL_MARKERS + _DEMO_VAL_MARKERS
 
 
 def _natural_key(s: str):
@@ -92,6 +118,14 @@ def _to_bool(v) -> bool:
     return bool(v)
 
 
+def _comfor_meta(row: dict) -> dict:
+    return {
+        "subset": row.get("subset") or "",
+        "real_source": row.get("real_source") or "",
+        "format": row.get("format") or "",
+    }
+
+
 def decode_row(row: dict) -> dict:
     img = Image.open(io.BytesIO(row["image_data"])).convert("RGB")
     return {
@@ -102,7 +136,86 @@ def decode_row(row: dict) -> dict:
         "image_name": row.get("image_name") or "",
         "prompt": (row.get("prompt") or "")[:512],
         "nsfw_flag": _to_bool(row.get("nsfw_flag", False)),
+        **_comfor_meta(row),
     }
+
+
+def _bytes_id(raw: bytes) -> str:
+    h = hashlib.sha1()
+    h.update(raw[:4096])
+    if len(raw) > 4096:
+        h.update(raw[-4096:])
+        h.update(str(len(raw)).encode())
+    return h.hexdigest()[:16]
+
+
+def _pil_id(img: Image.Image) -> str:
+    tiny = img.resize((8, 8), Image.BILINEAR)
+    return hashlib.sha1(tiny.tobytes()).hexdigest()[:16]
+
+
+def _row_image_name(row: dict, image_col: str) -> str:
+    for key in ("image_name", "filename", "file_name", "id", "image_id", "path"):
+        if key == image_col:
+            continue
+        value = row.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def dataset_id(spec) -> str:
+    """Stable dataset name for provenance (HF repo, ntire split, or source)."""
+    if getattr(spec, "dataset", ""):
+        return spec.dataset
+    if getattr(spec, "type", "") == "ntire":
+        return f"ntire-{getattr(spec, 'split', None) or 'train'}"
+    return getattr(spec, "name", "") or "src"
+
+
+def attach_source(sample: dict, spec) -> dict:
+    """Stamp mixture-source identity onto a sample (does not overwrite extras)."""
+    sample["source"] = spec.name
+    sample["source_type"] = spec.type
+    sample["dataset"] = dataset_id(spec)
+    return sample
+
+
+def sample_id(sample: dict) -> str:
+    """Stable identity used to hold val images out of the train mixture."""
+    src = str(sample.get("source") or "")
+    path = sample.get("image_path")
+    if path:
+        return f"{src}|path|{os.path.normpath(str(path))}"
+    name = sample.get("image_name")
+    if name:
+        return f"{src}|name|{name}"
+    digest = sample.get("content_id")
+    if digest:
+        return f"{src}|hash|{digest}"
+    raw = sample.get("image_bytes")
+    if raw:
+        return f"{src}|hash|{_bytes_id(raw)}"
+    img = sample.get("image")
+    if isinstance(img, Image.Image):
+        return f"{src}|hash|{_pil_id(img)}"
+    return f"{src}|meta|{sample.get('generator', '')}|{sample.get('label')}"
+
+
+def set_holdout(samples: List[dict]) -> Set[str]:
+    """Register val-slice IDs so later training iterators skip those images."""
+    global _HOLDOUT_IDS
+    _HOLDOUT_IDS = {sample_id(s) for s in samples}
+    return _HOLDOUT_IDS
+
+
+def clear_holdout() -> None:
+    global _HOLDOUT_IDS
+    _HOLDOUT_IDS = set()
+
+
+def is_held_out(sample: dict) -> bool:
+    return bool(_HOLDOUT_IDS) and sample_id(sample) in _HOLDOUT_IDS
 
 
 def _as_pil(value):
@@ -196,6 +309,7 @@ class ComforStream(torch.utils.data.IterableDataset):
                         "image_name": row.get("image_name") or "",
                         "prompt": (row.get("prompt") or "")[:512],
                         "nsfw_flag": _to_bool(row.get("nsfw_flag", False)),
+                        **_comfor_meta(row),
                     }
                 else:
                     sample = decode_row(row)
@@ -290,8 +404,11 @@ class HFGenericStream(torch.utils.data.IterableDataset):
                     continue
                 img = _as_pil(row.get(self._image_col))
                 gen = str(row.get(self._generator_col)) if self._generator_col else self._name
+                name = _row_image_name(row, self._image_col)
                 sample = {"image": img, "label": int(lab), "generator": gen or self._name,
-                          "architecture": "", "image_name": ""}
+                          "architecture": "", "image_name": name}
+                if not name:
+                    sample["content_id"] = _pil_id(img)
             except Exception:
                 continue
             if first:
@@ -329,6 +446,7 @@ class FolderDataset(torch.utils.data.Dataset):
                     for fn in filenames:
                         if Path(fn).suffix.lower() in IMAGE_EXTS:
                             self.files.append(str(Path(dirpath) / fn))
+        self.files = [f for f in self.files if not is_held_out_train_ref(f)]
         if not self.files:
             raise FileNotFoundError(f"No images found under {list(roots or [])}")
         self.label = label
@@ -369,7 +487,7 @@ class FolderPairStream:
                     for fn in filenames:
                         if Path(fn).suffix.lower() in IMAGE_EXTS:
                             files.append(str(Path(dirpath) / fn))
-        return files
+        return [f for f in files if not is_held_out_train_ref(f)]
 
     def _one_pass(self, rng: random.Random) -> Iterator[dict]:
         reals = list(self.real_files)
@@ -468,6 +586,7 @@ class NtireStream:
                     "architecture": "",
                     "image_name": s.path.name,
                     "distortions": s.distortions,
+                    "distortion_scales": s.distortion_scales,
                     "is_distorted": bool(s.is_distorted),
                 }
             if not self.cycle:
@@ -475,19 +594,53 @@ class NtireStream:
             epoch += 1
 
 
-def assert_not_comfor_eval_train(dataset: str = "", local_dirs: Optional[List[str]] = None) -> None:
-    """Raise if Community Forensics Eval is being used as training data."""
-    blob = " ".join([dataset or "", *(local_dirs or [])]).lower().replace("\\", "/")
+def _norm_ref(value: str) -> str:
+    return str(value or "").lower().replace("\\", "/")
+
+
+def is_held_out_train_ref(*parts: object) -> bool:
+    """True if a path / dataset / listing points at a never-train set."""
+    blob = " ".join(_norm_ref(p) for p in parts if p not in (None, ""))
+    return any(m in blob for m in _HELD_OUT_TRAIN_MARKERS)
+
+
+def _held_out_train_reason(blob: str) -> str:
     if any(m in blob for m in _COMFOR_EVAL_MARKERS):
-        raise ValueError(
+        return (
             "Community Forensics Eval is held-out. Do not train on "
             "OwensLab/CommunityForensics-Eval or local_dirs under comfor-eval. "
             "Use CommunityForensics-Small for training and --dataset comfor_eval for eval."
         )
+    return (
+        "The organisers' demonstration val is held-out (COCO val2017 reals, "
+        "WildFake DALL·E Advanced fakes). Do not train on coco-val2017 or "
+        "wildfake-dalle / DALL·E Advanced."
+    )
 
 
-def _source_iterator(spec, seed: int) -> Iterator[dict]:
-    """Build a (re-creatable) iterator for one source spec."""
+def assert_not_held_out_train(*parts: object, spec=None) -> None:
+    """Raise if a training source points at CompEval or the demo val pair."""
+    extra = []
+    if spec is not None:
+        extra = [
+            getattr(spec, "name", ""),
+            getattr(spec, "dataset", ""),
+            *(getattr(spec, "local_dirs", None) or []),
+            *(getattr(spec, "real_dirs", None) or []),
+            *(getattr(spec, "fake_dirs", None) or []),
+        ]
+    blob = " ".join(_norm_ref(p) for p in (*parts, *extra) if p not in (None, ""))
+    if is_held_out_train_ref(blob):
+        raise ValueError(_held_out_train_reason(blob))
+
+
+def assert_not_comfor_eval_train(dataset: str = "", local_dirs: Optional[List[str]] = None) -> None:
+    """Raise if Community Forensics Eval is being used as training data."""
+    assert_not_held_out_train(dataset, *(local_dirs or []))
+
+
+def _raw_source_iterator(spec, seed: int, *, cycle: bool = True) -> Iterator[dict]:
+    """Build a (re-creatable) iterator for one source spec, untagged."""
     if spec.type == "ntire":
         return iter(NtireStream(
             split=spec.split,
@@ -496,6 +649,7 @@ def _source_iterator(spec, seed: int) -> Iterator[dict]:
             max_samples=spec.max_samples,
             seed=seed,
             clean_only=spec.clean_only,
+            cycle=cycle,
         ))
     if spec.type == "comfor":
         ds = ComforStream(
@@ -529,6 +683,32 @@ def _source_iterator(spec, seed: int) -> Iterator[dict]:
     raise ValueError(f"Unknown source type '{spec.type}'")
 
 
+def _source_iterator(
+    spec, seed: int, *, skip_holdout: bool = True, cycle: bool = True
+) -> Iterator[dict]:
+    """Tagged iterator; training skips images reserved for the val slice."""
+    consecutive = 0
+    warned = False
+    for sample in _raw_source_iterator(spec, seed, cycle=cycle):
+        attach_source(sample, spec)
+        if is_held_out_train_ref(sample.get("image_path"), sample.get("image_name")):
+            continue
+        if skip_holdout and _HOLDOUT_IDS and sample_id(sample) in _HOLDOUT_IDS:
+            consecutive += 1
+            if consecutive < _HOLD_SKIP_FALLBACK:
+                continue
+            if not warned:
+                print(
+                    f"[data] {spec.name}: holdout covers this source; "
+                    "allowing reuse so training can proceed",
+                    flush=True,
+                )
+                warned = True
+        else:
+            consecutive = 0
+        yield sample
+
+
 def source_classes(spec) -> List[int]:
     """Which labels a source can emit (0=real, 1=fake)."""
     if spec.type == "folders":
@@ -559,7 +739,7 @@ class MixtureDataset(torch.utils.data.IterableDataset):
         if not sources:
             raise ValueError("MixtureDataset needs at least one source")
         for spec in sources:
-            assert_not_comfor_eval_train(getattr(spec, "dataset", ""), getattr(spec, "local_dirs", None))
+            assert_not_held_out_train(spec=spec)
         self.sources = list(sources)
         self.weights = [max(0.0, float(s.weight)) for s in self.sources]
         if sum(self.weights) <= 0:
@@ -652,7 +832,7 @@ def build_train_dataset(cfg) -> torch.utils.data.Dataset:
             d.sources, seed=cfg.seed, balance_labels=d.balance_labels
         )
     if d.source in ("mixture", "comfor"):
-        assert_not_comfor_eval_train(d.dataset, d.local_dirs)
+        assert_not_held_out_train(d.dataset, *(d.local_dirs or []))
         # explicit comfor, or a mixture with no sources: Community Forensics
         return ComforStream(
             dataset=d.dataset,
@@ -663,6 +843,7 @@ def build_train_dataset(cfg) -> torch.utils.data.Dataset:
             local_dirs=d.local_dirs or None,
         )
     if d.source == "folders":
+        assert_not_held_out_train(*(d.real_dirs or []), *(d.fake_dirs or []))
         parts = []
         if d.real_dirs:
             parts.append(FolderDataset(d.real_dirs, 0))
@@ -678,42 +859,123 @@ def build_train_dataset(cfg) -> torch.utils.data.Dataset:
     raise ValueError(f"Unknown data source '{d.source}'")
 
 
-def build_val_dataset(cfg) -> torch.utils.data.Dataset:
-    """A cheap train-distribution slice for monitoring during training.
+def _val_spec(spec):
+    """Cheap shuffle for the held-out draw; we stop ourselves (no max_samples)."""
+    return dataclasses.replace(
+        spec,
+        max_samples=None,
+        shuffle_buffer=min(int(getattr(spec, "shuffle_buffer", 0) or 0), 256),
+    )
 
-    Prefer NTIRE when it is in the mix: the index is already cached from
-    training, so eval does not refill parquet shuffle buffers. Streaming
-    sources keep a tiny shuffle if we have to use them.
+
+def _take_source_val(spec, n: int, seed: int) -> List[dict]:
+    """Up to `n` samples from one source, class-balanced when it can emit both."""
+    if n <= 0:
+        return []
+    classes = source_classes(spec)
+    it = _source_iterator(_val_spec(spec), seed, skip_holdout=False, cycle=False)
+    limit = max(n * 32, 256)
+    try:
+        if len(classes) >= 2:
+            want = {0: (n + 1) // 2, 1: n // 2}
+            buckets = {0: [], 1: []}
+            scanned = 0
+            for sample in it:
+                scanned += 1
+                y = int(sample.get("label", -1))
+                if y in want and len(buckets[y]) < want[y]:
+                    buckets[y].append(sample)
+                if len(buckets[0]) >= want[0] and len(buckets[1]) >= want[1]:
+                    break
+                if scanned >= limit:
+                    break
+            return buckets[0] + buckets[1]
+        out: List[dict] = []
+        for sample in it:
+            out.append(sample)
+            if len(out) >= n:
+                break
+        return out
+    except FileNotFoundError:
+        print(f"[data] val: skipping {spec.name}: not found", flush=True)
+        return []
+    except StopIteration:
+        return []
+    except Exception as exc:
+        print(f"[data] val: skipping {spec.name}: {exc}", flush=True)
+        return []
+
+
+def collect_held_out_val(cfg) -> List[dict]:
+    """Class-balanced slice from every training source for in-loop eval.
+
+    These images are later registered with ``set_holdout`` so the train
+    mixture does not see them.
     """
-    import dataclasses
+    from .config import SourceSpec
 
     d = cfg.data
     if d.source == "mixture" and d.sources:
-        ntire = [s for s in d.sources if s.type == "ntire"]
-        specs = ntire or [s for s in d.sources if s.type in ("comfor", "hf", "ntire")]
-        specs = specs or list(d.sources)
+        specs = list(d.sources)
         n = max(1, len(specs))
-        capped = [
-            dataclasses.replace(
-                s,
-                max_samples=max(1, d.val_max_samples // n),
-                shuffle_buffer=min(int(s.shuffle_buffer or 0), 256),
+        quota = max(1, int(d.val_max_samples) // n)
+        leftover = max(0, int(d.val_max_samples) - quota * n)
+        out: List[dict] = []
+        for i, spec in enumerate(specs):
+            want = quota + (1 if i < leftover else 0)
+            chunk = _take_source_val(spec, want, seed=int(d.val_seed) + i * 17)
+            print(
+                f"[data] val: {spec.name} held out {len(chunk)}/{want}",
+                flush=True,
             )
-            for s in specs
-        ]
-        return MixtureDataset(
-            capped, seed=d.val_seed, balance_labels=d.balance_labels
-        )
+            out.extend(chunk)
+        return out
     if d.source == "comfor":
-        return ComforStream(
+        spec = SourceSpec(
+            name="comfor",
+            type="comfor",
             dataset=d.dataset,
             split=d.split,
             shuffle_buffer=min(d.shuffle_buffer, 256),
-            max_samples=d.val_max_samples,
-            seed=d.val_seed,
-            local_dirs=d.local_dirs or None,
+            local_dirs=list(d.local_dirs or []),
         )
-    return build_train_dataset(cfg)  # folders: reuse train set for monitoring
+        return _take_source_val(spec, int(d.val_max_samples), int(d.val_seed))
+    if d.source == "folders":
+        spec = SourceSpec(
+            name="folders",
+            type="folders",
+            real_dirs=list(d.real_dirs or []),
+            fake_dirs=list(d.fake_dirs or []),
+        )
+        return _take_source_val(spec, int(d.val_max_samples), int(d.val_seed))
+    if d.source == "ntire":
+        spec = SourceSpec(
+            name="ntire",
+            type="ntire",
+            split=d.split,
+        )
+        return _take_source_val(spec, int(d.val_max_samples), int(d.val_seed))
+    return []
+
+
+def build_val_dataset(cfg) -> torch.utils.data.Dataset:
+    """Held-out slice covering every mixture source (see collect_held_out_val)."""
+    samples = collect_held_out_val(cfg)
+    sources = list(cfg.data.sources) if cfg.data.source == "mixture" and cfg.data.sources else []
+
+    class _HeldOut(torch.utils.data.IterableDataset):
+        def __init__(self, items, specs):
+            super().__init__()
+            self._items = items
+            self.sources = specs
+
+        def __iter__(self):
+            yield from self._items
+
+        def __len__(self):
+            return len(self._items)
+
+    return _HeldOut(samples, sources)
 
 
 class BatchBuilder:

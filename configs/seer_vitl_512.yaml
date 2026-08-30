@@ -51,11 +51,13 @@ log_every: 50
 heatmap_every: 50
 heatmap_n: 4
 ckpt_every: 500             # last.pt between evals (cgroup RAM can SIGKILL this job)
+misclass_every: 2000        # FP/FN JPEGs + provenance from every source
+misclass_max: 64            # worst errors per kind (fp/fn) per split
 out_dir: runs/seer_vitl
 
 data:
   source: mixture
-  val_max_samples: 4096
+  val_max_samples: 4096   # ~455 per source, class-balanced; held out of train
   balance_labels: true  # 50/50 real/fake, then weights within each class
   sources:
     - name: comfor
@@ -128,15 +130,19 @@ data:
       weight: 0.10
 
 augment:
-  # benchmark robustness levels (GenImage / OmniAID / Pangram protocols)
+  # Train harder than the eval table (NTIRE 2026 / arxiv:2604.11487).
+  # Eval `--perturbation all` stays JPEG 90/70/50/30, blur 0.5/1/2,
+  # resize 0.5×/0.25×, noise 0.02/0.05/0.10, jitter ±20%, crop 80%.
   jpeg_prob: 0.75
-  jpeg_quality: [90, 70, 50, 30]
-  blur_sigma: [0.5, 1.0, 2.0]
-  noise_levels: [0.02, 0.05, 0.10]
-  downscale_levels: [0.5, 0.25]
-  color_jitter: 0.2            # +/-20%
+  jpeg_quality: [90, 70, 50, 30, 20, 10]
+  blur_sigma: [0.5, 1.0, 2.0, 4.0]
+  noise_levels: [0.02, 0.05, 0.10, 0.20]
+  downscale_levels: [0.5, 0.25, 0.125]
+  color_jitter: 0.3            # +/-30% (eval table is +/-20%)
   center_crop_prob: 0.15       # crop 80%
   downscale_prob: 0.30
+  extra_distort_prob: 0.35     # impulse / motion / quantize / shift / pixelate
+  extra_distort_max: 2
 
 composite:
   prob: 0.60                 # more fakes become overlays

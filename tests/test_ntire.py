@@ -133,28 +133,45 @@ def test_ntire_stream_cycle_and_one_pass(tmp_path: Path, monkeypatch):
     assert {s["image_name"] for s in got} == {"a.jpg", "b.jpg"}
 
 
-def test_build_val_prefers_ntire():
+def test_build_val_covers_all_sources(tmp_path: Path):
     from seer.config import DataConfig, SourceSpec, TrainConfig
-    from seer.data import build_val_dataset
+    from seer.data import collect_held_out_val, clear_holdout
+
+    clear_holdout()
+    real = tmp_path / "real"
+    fake = tmp_path / "fake"
+    real.mkdir()
+    fake.mkdir()
+    for i in range(6):
+        Image.new("RGB", (8, 8), (i, 0, 0)).save(real / f"r{i}.jpg")
+        Image.new("RGB", (8, 8), (0, i, 0)).save(fake / f"f{i}.jpg")
 
     cfg = TrainConfig(
         data=DataConfig(
             source="mixture",
             sources=[
-                SourceSpec(name="comfor", type="comfor", weight=0.5, shuffle_buffer=8192),
-                SourceSpec(name="ntire", type="ntire", weight=0.3, shard=-1),
+                SourceSpec(name="reals", type="folders", weight=0.5,
+                           real_dirs=[str(real)]),
+                SourceSpec(name="fakes", type="folders", weight=0.5,
+                           fake_dirs=[str(fake)]),
             ],
-            val_max_samples=64,
+            val_max_samples=4,
+            val_seed=0,
         )
     )
-    ds = build_val_dataset(cfg)
-    assert [s.type for s in ds.sources] == ["ntire"]
-    assert ds.sources[0].shuffle_buffer <= 256
-    assert ds.sources[0].max_samples == 64
+    samples = collect_held_out_val(cfg)
+    assert {s["source"] for s in samples} == {"reals", "fakes"}
+    assert {s["dataset"] for s in samples} == {"reals", "fakes"}
+    assert all(s["source_type"] == "folders" for s in samples)
+    by = {}
+    for s in samples:
+        by[s["source"]] = by.get(s["source"], 0) + 1
+    assert by["reals"] >= 1 and by["fakes"] >= 1
+    clear_holdout()
 
 
 def test_eval_dataset_names_and_groups():
-    from seer.eval import _group_metrics, known_eval_datasets
+    from seer.eval import _group_metrics, compute_metrics, known_eval_datasets
 
     names = known_eval_datasets()
     assert "ntire_test" in names
@@ -162,23 +179,36 @@ def test_eval_dataset_names_and_groups():
     m = _group_metrics([0.1, 0.9, 0.8, 0.2], [0, 1, 1, 0], ["clean", "distorted", "clean", "distorted"])
     assert set(m) == {"clean", "distorted"}
     assert m["clean"]["n"] == 2
+    # robust AUROC is the distorted-only ROC, not the pooled one
+    probs = np.array([0.01, 0.99, 0.55, 0.45])
+    labels = np.array([0, 1, 0, 1])
+    flags = ["clean", "clean", "distorted", "distorted"]
+    grouped = _group_metrics(probs, labels, flags)
+    pooled = compute_metrics(probs, labels)
+    assert grouped["distorted"]["auroc"] != pooled["auroc"]
+    assert grouped["distorted"]["n"] == 2
 
 
 def test_cached_val_samples_reused(monkeypatch):
     from seer import train as T
     from seer.config import DataConfig, TrainConfig
+    from seer.data import clear_holdout
 
     T._VAL_SAMPLE_CACHE.clear()
+    clear_holdout()
     calls = {"n": 0}
 
     def fake_build(cfg):
         calls["n"] += 1
-        return [{"label": 0, "image_name": "a"}, {"label": 1, "image_name": "b"}]
+        return [{"label": 0, "image_name": "a", "source": "x"},
+                {"label": 1, "image_name": "b", "source": "x"}]
 
-    monkeypatch.setattr(T, "build_val_dataset", fake_build)
+    monkeypatch.setattr(T, "collect_held_out_val", fake_build)
     cfg = TrainConfig(data=DataConfig(val_max_samples=2, source="mixture"))
     first = T._cached_val_samples(cfg)
     second = T._cached_val_samples(cfg)
     assert first is second
     assert calls["n"] == 1
     assert [s["image_name"] for s in first] == ["a", "b"]
+    clear_holdout()
+    T._VAL_SAMPLE_CACHE.clear()

@@ -117,13 +117,15 @@ data:
 
 augment:
   jpeg_prob: 0.75
-  jpeg_quality: [90, 70, 50, 30]
-  blur_sigma: [0.5, 1.0, 2.0]
-  noise_levels: [0.02, 0.05, 0.10]
-  downscale_levels: [0.5, 0.25]
-  color_jitter: 0.2
+  jpeg_quality: [90, 70, 50, 30, 20, 10]
+  blur_sigma: [0.5, 1.0, 2.0, 4.0]
+  noise_levels: [0.02, 0.05, 0.10, 0.20]
+  downscale_levels: [0.5, 0.25, 0.125]
+  color_jitter: 0.3
   center_crop_prob: 0.15
   downscale_prob: 0.30
+  extra_distort_prob: 0.35
+  extra_distort_max: 2
 
 composite:
   prob: 0.60                 # more fakes become overlays

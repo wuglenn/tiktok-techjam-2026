@@ -197,11 +197,12 @@ def test_composite_combinations():
 def test_augment_pipeline():
     rng = random.Random(0)
     cfg = load_config().augment
-    assert cfg.jpeg_quality == [90, 70, 50, 30]
-    assert cfg.blur_sigma == [0.5, 1.0, 2.0]
-    assert cfg.noise_levels == [0.02, 0.05, 0.10]
-    assert cfg.downscale_levels == [0.5, 0.25]
-    assert cfg.color_jitter == 0.2
+    assert {90, 70, 50, 30, 20, 10} <= set(cfg.jpeg_quality)
+    assert {0.5, 1.0, 2.0, 4.0} <= set(cfg.blur_sigma)
+    assert {0.02, 0.05, 0.10, 0.20} <= set(cfg.noise_levels)
+    assert {0.5, 0.25, 0.125} <= set(cfg.downscale_levels)
+    assert cfg.color_jitter >= 0.2
+    assert cfg.extra_distort_prob > 0
     img = _rand_pil(700, rng)
     t = train_transform(img, 224, rng, cfg)
     assert t.shape == (3, 224, 224)
@@ -216,17 +217,28 @@ def test_augment_pipeline():
 
 
 def test_perturbations():
-    from seer.augment import PERTURBATIONS, apply_perturbation, center_crop
+    from seer.augment import (
+        BENCHMARK_PERTURBATIONS,
+        HARD_PERTURBATIONS,
+        PERTURBATIONS,
+        apply_perturbation,
+        center_crop,
+        perturbation_names,
+    )
 
     rng = random.Random(1)
     img = _rand_pil(600, rng)
+    assert perturbation_names("all") == list(BENCHMARK_PERTURBATIONS)
+    assert "jpeg30" in BENCHMARK_PERTURBATIONS and "jpeg10" in HARD_PERTURBATIONS
+    assert "crop80" in BENCHMARK_PERTURBATIONS and "blur2.0" in BENCHMARK_PERTURBATIONS
     for name in PERTURBATIONS:
         out = apply_perturbation(img, name)
         assert isinstance(out, Image.Image)
-        if name == "crop80":
-            assert out.size == (480, 480), out.size  # 80% of each side
-        else:
+        if name.startswith("crop"):
+            assert out.size[0] < img.size[0] and out.size[1] < img.size[1]
+        elif name != "pangram":
             assert out.size == img.size, (name, out.size)
+    assert apply_perturbation(img, "crop80").size == (480, 480)
     try:
         apply_perturbation(img, "nope")
         raise AssertionError("expected ValueError")
@@ -395,6 +407,7 @@ def test_local_parquet_source():
         assert all(s["image"] is None and s["image_bytes"] for s in out)
         labels = {s["label"] for s in out}
         assert labels == {0, 1}
+        assert out[0]["subset"] == "test" and out[0]["real_source"] == "LAION"
         assert load_sample_image(out[0]).size == (96, 96)
     print("local parquet source OK")
 

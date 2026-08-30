@@ -144,18 +144,21 @@ def test_probe_end_to_end():
             "ema_decay=0.999", "grad_checkpointing=true",
             "probe.enabled=true", "probe.layers=[0,2]",
             "heatmap_every=1", "heatmap_n=2",
+            "misclass_every=2", "misclass_max=4",
             f"out_dir={d.as_posix()}/run",
         ])
         cfg.data.source = "folders"
         cfg.data.real_dirs = [str(d / "real")]
         cfg.data.fake_dirs = [str(d / "fake")]
-        cfg.data.val_max_samples = 8
+        cfg.data.val_max_samples = 2
 
         run(cfg)
         last = os.path.join(d, "run", "last.pt")
         assert os.path.exists(last)
         hm = os.path.join(d, "run", "heatmaps", "step_000001.png")
         assert os.path.exists(hm)
+        manifest = os.path.join(d, "run", "misclassified", "step_000002", "val", "manifest.jsonl")
+        assert os.path.exists(manifest)
         m, cfg_dict, _ = load_checkpoint(last)
         assert getattr(m, "probe", False) and m.probe_layers == [0, 2]
         assert hasattr(m, "probe_patch_head")
@@ -163,6 +166,8 @@ def test_probe_end_to_end():
         x = torch.randn(1, 3, 224, 224)
         out = m(x)
         assert out["patch_logits"].shape[-1] == (224 // m.patch_size) ** 2
+        from seer.data import clear_holdout
+        clear_holdout()
     print("probe end-to-end training OK")
 
 
