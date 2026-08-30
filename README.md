@@ -116,7 +116,7 @@ uv run scripts/download_open_images.py --workers 32 --max-gb 70
 uv run python main.py train --config configs/seer_vitl_512.yaml          # A100-class
 uv run python main.py train --config configs/seer_vitl_local.yaml       # single 12GB GPU
 
-# 4b. page-level multi-layer linear probe (frozen backbone) - cheap ablation
+# 4b. multi-layer linear probe (frozen backbone) - cheap ablation
 #     against continuation training
 uv run python main.py train --config configs/seer_probe.yaml
 #     or on top of any config:
@@ -130,6 +130,10 @@ uv run python main.py eval --checkpoint runs/seer_vitl/best.pt --dataset ntire_v
 uv run python main.py eval --checkpoint runs/seer_vitl/best.pt --dataset ntire_test   # HF public test (2.5k)
 uv run python main.py eval --checkpoint runs/seer_vitl/best.pt --dataset folders \
     --real-dir data/wikiart --out-json wikiart_fpr.json                   # FPR eval
+
+# 5b. error analysis: the most confident FPs / FNs, each with its heatmap
+uv run python main.py eval --checkpoint runs/seer_vitl/best.pt --dataset ntire_val \
+    --error-dir runs/eval/errors --error-n 6 --out-json runs/eval/ntire_val.json
 
 # 6. use it
 uv run python main.py infer --checkpoint runs/seer_vitl/best.pt \
@@ -183,14 +187,20 @@ Even the largest supported backbone stays under budget; the default leaves
 - **Continuation training**: full backbone FT + heads, AdamW, layer-wise LR
   decay 0.8, cosine schedule, warmup 1k, EMA 0.999, bf16. The probe recipe
   uses Muon on 2D head weights instead (`optimizer: muon`).
-- **Dual-head objective**: image-level BCE + per-patch BCE (weight 1.0).
+- **Dual-head objective**: image-level BCE + per-patch BCE (weight 1.0), the
+  patch term `pos_weight`-balanced by `n_real/n_fake` patches
+  (`balance_patch`) so a small fake-over-real crop is not drowned out by the
+  real majority around it.
 - **Composite training** (60% of fake samples; ~25% of the batch is mixed
   FoR/RoF): cropped overlays layered over a base image. Compositing is
   itself a discontinuity, so *all four*
   top-on-base pairings are trained — fake-over-real (localized labels),
   real-over-fake (inverted labels), fake-over-fake (label 1 everywhere),
-  real-over-real (label stays real) — and patch labels come from each
-  overlay's footprint in patch-grid space (last layer wins). Overlays are
+  real-over-real (label stays real). Per-pixel fake-ness is Porter-Duff
+  composited along with the RGB — a 40% blend is a 0.4 target — then pooled
+  to the patch grid, so soft mixes get soft targets; the page target stays
+  binary (any visible AI → fake), and label maps travel with the crop when an
+  already-composited slot is reused as a source. Overlays are
   random crops of the source (own scale / aspect / flip), a sample can
   receive n ~ Uniform{1,...,k} overlays (k = max_overlays, default 3),
   and two overlay modes mix by default:
@@ -204,26 +214,28 @@ Even the largest supported backbone stays under budget; the default leaves
   plus WebP, grayscale, hflip.
 - 512×512 input (patch grid 32×32), effective batch 108 (54 × 2 accum), ~60k steps.
 
-### Page-level multi-layer linear probe (ablation)
+### Multi-layer linear probe (ablation)
 
 `probe` mode is the frozen-backbone alternative to continuation training:
-a single linear layer on features tapped from several transformer blocks.
+linear heads on features tapped from several transformer blocks.
 Early blocks carry high-frequency / low-level statistics — where generator
 fingerprints live — while mid and late blocks carry increasingly semantic
-features, so the probe sees both ends of the hierarchy. Each tap
-contributes `[CLS ; mean(patch tokens)]`; the concatenation is standardized
-(LayerNorm) and mapped to **one logit per page (image)** — there is no patch
-head, so probe checkpoints produce verdicts but no heatmaps.
+features, so the probe sees both ends of the hierarchy. Two independent heads
+are trained, each over its own LayerNorm-standardized concatenation of taps:
+a **page head** on `[CLS ; mean(patch tokens)]` → one logit per image, and a
+**patch head** on the raw patch tokens → one logit per patch. Probe
+checkpoints therefore produce heatmaps too.
 
 - `probe.layers`: 0-based block indices, negative from the end (`-1` = final
   block); empty = four evenly spaced taps (e.g. `[6, 12, 18, 23]` on
   DINOv3 ViT-L's 24 blocks).
 - The backbone always stays frozen and runs without activation gradients,
-  so bigger batches fit and gradient checkpointing is unnecessary
-  (ViT-L probe head is ~8k parameters: `2 × 1024 × 4` features → 1).
+  so bigger batches fit and gradient checkpointing is unnecessary (both ViT-L
+  probe heads together are ~37k parameters: LayerNorm + linear over 8,192-d
+  page features and 4,096-d patch features).
 - Use a higher head LR (~1e-3) than for fine-tuning; composite training
-  still applies (the page label keeps its "contains AI content" meaning),
-  the per-patch labels are simply unused.
+  applies unchanged — the page head keeps the "contains AI content" label and
+  the patch head trains on the composite patch targets.
 - Expect it to land below continuation training (that gap is why the hero
   recipe fine-tunes) — but it's a fast, honest baseline and a good check on
   how linearly separable the frozen features are.
@@ -247,8 +259,56 @@ head, so probe checkpoints produce verdicts but no heatmaps.
   every `eval_every` steps (`eval_datasets: [ntire_test]`); `best.pt`
   still follows the train-distribution val slice.
 - **FPR sets** — real-only folders (WikiArt etc.).
-- Metrics: macro (balanced) accuracy, mAP (AP on fake class), AUROC, FPR/FNR.
+- Metrics: macro (balanced) accuracy, mAP (AP on fake class), AUROC, F1,
+  precision/recall, FPR/FNR, plus per-architecture and (on NTIRE)
+  clean-vs-distorted and per-distortion breakdowns.
   Published Pangram numbers are printed next to ours for direct comparison.
+
+### Error analysis (`--error-dir`)
+
+Aggregate metrics say *that* a detector fails, never *why*. Any eval pass can
+keep its worst mistakes and write each one out as an explained panel:
+
+```bash
+uv run python main.py eval --checkpoint runs/seer_vitl/best.pt \
+    --dataset ntire_val --error-dir runs/eval/errors --error-n 6
+```
+
+Selection is by confidence, because that is where the blind spots are legible:
+false positives rank by how certain the model was that a real photo was AI,
+false negatives by how certain it was that a generated image was real. A
+mistake at P(AI)=0.51 is noise; one at 0.99 is a lesson. `ErrorBank` keeps only
+the top `--error-n` of each kind (two bounded heaps), so a 50k-image eval costs
+nothing extra in memory.
+
+```
+runs/eval/errors/
+  fp_01_p0.994_<image>.png   real, called AI at 99.4%
+  fn_01_p0.006_<image>.png   AI, called real at 99.4%
+```
+
+Each panel is `input | input + per-patch AI heatmap`, rendered from the same
+local head that produces inference heatmaps — so a false positive shows *which
+region* dragged the verdict up, and a false negative shows whether the model
+half-saw the generated area or missed it entirely. The images are the ones the
+model actually saw, i.e. after the perturbation under test. Page-only
+checkpoints dump the plain image and mark `explained: false`.
+
+The same records land in the metrics JSON under `error_analysis`, tagged with
+the generator where the corpus provides one, so failures can be counted per
+generator instead of eyeballed:
+
+```json
+{"kind": "fn", "rank": 1, "file": "runs/eval/errors/fn_01_p0.006_1234.png",
+ "prob_ai": 0.006, "label": 1, "explained": true,
+ "generator": "flux.1-dev", "distortions": ["jpeg"]}
+```
+
+With `--perturbation all` the dump repeats per level into
+`runs/eval/errors/<perturbation>/`, which answers something the summary table
+cannot: are the images that fail under JPEG q30 the same ones that failed
+clean, or different ones? For a quick look, run it on a single perturbation —
+the full sweep writes 16 folders.
 
 ## Limitations (honest ones)
 
@@ -260,6 +320,9 @@ head, so probe checkpoints produce verdicts but no heatmaps.
   mitigates that.
 - No deepfake/face-swap detection (Pangram's initial release doesn't either).
 - Probe checkpoints (frozen backbone) are page-level only - no heatmaps.
+- Error analysis is only as good as the eval set: `--error-dir` surfaces the
+  most confident mistakes, but a corpus with no digital art in the real class
+  cannot show you the false positives that class would cause.
 
 ## References
 
