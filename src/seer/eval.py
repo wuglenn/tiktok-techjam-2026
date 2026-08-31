@@ -2,7 +2,7 @@
 
 Replicates the evaluation protocol of the Pangram Image technical blog:
 
-  * CommunityForensics-Eval ("CompEval") - the comprehensive evaluation set of
+  * CommunityForensics-Eval - the comprehensive evaluation set of
     CVPR 2025 "Community Forensics" - macro accuracy + mAP
   * "Augmented" protocol - downscale to 1024x1024 + JPEG q50, both classes
   * Robustness sweeps - the benchmark perturbation protocol (JPEG 90/70/50/30,

@@ -17,7 +17,8 @@
 #   * laion400m-1   - jp1924/Laion400m-1 hosted images (min side >512)
 #   * open-images-v7 - Open Images V7 validation+test reals
 #
-# Weights are relative sampling probabilities, tuned for three goals:
+# Weights sum to 1.0; balance_labels renormalizes them within the drawn
+# class (see below). Tuned for three goals:
 #   1. recency - the most recent fake sources carry the most fake mass:
 #      ntire (42 gens 2022-2026, ~28% of fake draws), openfake (~16%,
 #      frontier commercial APIs through 2026), and the GAS-Station
@@ -82,7 +83,7 @@ data:
       split: train
       local_dirs: [/workspace/data/commfor-small]
       shuffle_buffer: 8192
-      weight: 0.22            # ~22% of fake mass + its paired reals
+      weight: 0.176           # ~22% of fake mass + its paired reals
 
     - name: flux-reason
       type: hf
@@ -91,7 +92,7 @@ data:
       label: 1                 # every row is FLUX.1-dev
       local_dirs: [/workspace/data/flux-reason-6m]
       shuffle_buffer: 2048
-      weight: 0.05            # single 2024 family; kept below sid-set
+      weight: 0.04            # single 2024 family; kept below sid-set
 
     - name: frontier-fakes
       type: hf
@@ -104,7 +105,7 @@ data:
       keep_label: 1            # fake images only
       local_dirs: [/workspace/data/frontier-fakes]
       shuffle_buffer: 1024
-      weight: 0.05            # only ~5k train fakes; openfake now carries
+      weight: 0.04            # only ~5k train fakes; openfake now carries
                               # the frontier-commercial load with 130k unique
 
     - name: sid-set
@@ -118,23 +119,23 @@ data:
       keep_label: 1
       local_dirs: [/workspace/data/sid-set]
       shuffle_buffer: 2048
-      weight: 0.05            # untagged, older-skew generators
+      weight: 0.04            # untagged, older-skew generators
 
     - name: ntire
       type: ntire
       split: train
       shard: -1                 # all 6 distribution-matched shards
-      weight: 0.28              # most recent curated set; 42 gens 2022-2026 + matched reals
+      weight: 0.224             # most recent curated set; 42 gens 2022-2026 + matched reals
 
     - name: gs-images-v3
       type: folders             # run: scripts/wire_gasstation.py
       fake_dirs: [/workspace/data/gs-images-v3/wired/images.txt]
-      weight: 0.09              # recent open-model dumps
+      weight: 0.072             # recent open-model dumps
 
     - name: gs-images-v4
       type: folders
       fake_dirs: [/workspace/data/gs-images-v4/wired/images.txt]
-      weight: 0.10              # latest weekly dumps - highest recency
+      weight: 0.08              # latest weekly dumps - highest recency
 
     - name: openfake
       type: folders             # run: scripts/openfake.py fetch --from-rank ...
@@ -142,7 +143,7 @@ data:
       # loader refuses any path under openfake/holdout_*.
       fake_dirs: [/workspace/data/openfake/train/fake]
       real_dirs: [/workspace/data/openfake/train/real]
-      weight: 0.16              # ~16% of fake mass: 30 generators selected by
+      weight: 0.128             # ~16% of fake mass: 30 generators selected by
                                 # measured recall, incl. nano-banana,
                                 # qwen-image, ideogram-3.0, flux.2-klein-4b.
                                 # Reals are LAION+Pexels (news / clean stock),
@@ -151,13 +152,13 @@ data:
     - name: laion400m-1
       type: folders             # jp1924/Laion400m-1; scripts/download_laion400m.py
       real_dirs: [/workspace/data/laion400m-1/real]
-      weight: 0.16              # ~18% of real mass; match openfake so
+      weight: 0.128             # ~18% of real mass; match openfake so
                                 # web-crawl reals are not a footnote
 
     - name: open-images-v7
       type: folders             # scripts/download_open_images.py (val + test)
       real_dirs: [/workspace/data/open-images-v7]
-      weight: 0.09
+      weight: 0.072
 
 augment:
   # Train harder than the eval table (NTIRE 2026 / arxiv:2604.11487).

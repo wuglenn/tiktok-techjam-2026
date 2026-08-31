@@ -29,7 +29,7 @@ runs/seer_vitl/eval_step27000/
 | Protocol | clean (no Pangram 1024/JPEG-q50, no named perturbation, no hflip TTA) |
 | Threshold | 0.5 |
 | Hardware | RTX 4090 24 GB, batch 32, 16 decode threads, prefetch 4 |
-| Throughput | ~50 img/s CompEval (parquet), ~98 img/s folder sets |
+| Throughput | ~50 img/s CommunityForensics-Eval (parquet), ~98 img/s folder sets |
 | Wall time | 43 min for 194,361 images |
 
 Single-class buckets (one generator, or real-only COCO) have undefined
@@ -44,19 +44,19 @@ precision and recall are undefined.
 
 | Set | n (fake / real) | Acc | Prec | Rec | Macro acc | mAP | AUROC | F1 | FPR | FNR |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| CompEval | 51,836 (25,918 / 25,918) | **95.65%** | **99.80%** | **91.48%** | 95.65% | 99.62% | 99.54% | 95.46% | **0.18%** | 8.52% |
+| CommunityForensics-Eval | 51,836 (25,918 / 25,918) | **95.65%** | **99.80%** | **91.48%** | 95.65% | 99.62% | 99.54% | 95.46% | **0.18%** | 8.52% |
 | OpenFake core/test | 89,225 (45,697 / 43,528) | **97.12%** | **99.79%** | **94.58%** | 97.19% | 99.84% | 99.81% | 97.12% | **0.21%** | 5.42% |
 | OpenFake reddit/test | 36,227 (29,116 / 7,111) | **83.65%** | **99.38%** | **80.16%** | 89.05% | 99.28% | 97.28% | 88.74% | 2.05% | 19.84% |
 | MIRAGE | 12,073 (10,682 / 1,391) | **79.95%** | **99.08%** | **78.06%** | 86.26% | 99.02% | 93.02% | 87.32% | 5.54% | 21.94% |
 | COCO val2017 (reals) | 5,000 (0 / 5,000) | **99.90%** | — | — | — | — | — | — | **0.10%** | — |
 
-Pangram Image on CompEval is **97.29% / 99.70%** (macro acc / mAP). We are
+Pangram Image on CommunityForensics-Eval is **97.29% / 99.70%** (macro acc / mAP). We are
 1.64 points of macro acc behind and 0.08 points of mAP behind, with a
 lower FPR (0.18% vs the commercial pitch of “careful FPR control”). The
-gap is almost all **false negatives**, concentrated on pixel-space
-diffusion (CompEval) and a handful of frontier / in-the-wild generators.
+gap is almost all **false negatives**, concentrated on pixel-space diffusion
+and a handful of frontier / in-the-wild generators.
 
-## CommunityForensics-Eval (CompEval)
+## CommunityForensics-Eval
 
 Pangram protocol: 21 generators, paired 1:1 with reals, streamed from the
 local 413-shard dump at `$SEER_DATA_ROOT/comfor-eval`.
@@ -140,9 +140,9 @@ split is the next lever if we want a deployable operating point.
 ## MIRAGE
 
 Human-verified in-the-wild set (`MIRAGE-GROUP/MIRAGE` test split, 2 local
-parquet shards). `source` codes are MIRAGE’s own tags, not generator
-names. Mixed-class rows (IID, OOD-R) report both classes; the rest are
-fake-only so the column is recall.
+parquet shards). `source` codes are MIRAGE's own tags — they name the
+construction pipeline, not a generator. Mixed-class rows (IID, OOD-R)
+report both classes; the rest are fake-only so the column is recall.
 
 | Source | n (fake / real) | Acc | Prec | Rec | Macro acc | FPR |
 |---|---:|---:|---:|---:|---:|---:|
@@ -158,10 +158,29 @@ fake-only so the column is recall.
 | IE | 814 / 0 | 38.94% | 100.00% | 38.94% | — | — |
 | **All** | **10,682 / 1,391** | **79.95%** | **99.08%** | **78.06%** | **86.26%** | **5.54%** |
 
-T2I / RMG (the bulk of the fakes) are easy. The failure modes are
-in-painting, face-swap, and image-editing (IE / IP/OP / FS / TR / CB) —
-exactly the composite-like edits the patch head is supposed to catch, but
-this pass is page-level only. FPR on the mixed real slices is 4–7%.
+Tag decode (per the MIRAGE paper, arXiv:2508.13223 — the eight generation
+patterns were built as 64 ComfyUI / Python pipelines over 53 models):
+
+| Tag | Pipeline |
+|---|---|
+| `T2I` | vanilla text-to-image from generators held out of the ID split — CogView4-6B, Bagel, Wan2.1, HiDream, UniDiffuser (11 pipelines) |
+| `RMG` | realistic model generation — full-body e-commerce model shots: a LoRA-tuned T2I model renders the person, real garments are composited in via segmentation + inpainting (16 pipelines) |
+| `PCRMG` | pose-consistent model generation — RMG plus DWPose + ControlNet, so the generated model keeps the original photo's pose (16 pipelines) |
+| `IP/OP` | inpainting / outpainting — segmentation- or random-box masks regenerated, or the canvas extended 1–1.5× and filled (8 pipelines) |
+| `IE` | instruction-based editing — natural-language edits via Flux.1-Kontext, InstructPix2Pix, Bagel, Wanx-imageedit (4 pipelines) |
+| `FS` | face swapping — faces exchanged between two real photos, then restored with GFPGAN / Real-ESRGAN (3 pipelines) |
+| `CB` | background change — subject segmented out (BiRefNet / U2-Net / InSPyReNet), new background generated from the original caption (3 pipelines) |
+| `TR` | virtual try-on — clothing transferred between two model photos via segmentation + local inpainting (3 pipelines) |
+| `IID` | the benchmark's in-distribution test split — human-curated images plus ID-split T2I, from the sources the 20k training set drew from |
+| `OOD-R` | the paper's OOD-C — expert-verified real *and* fake images curated from a platform source the ID split never saw |
+
+Full-image synthesis is largely solved: T2I / RMG / PCRMG — 6,455 of the
+10,682 fakes — recall at 91–99%. The hole is local edits: instruction
+editing, inpainting/outpainting, face swap, try-on and background change
+(IE / IP/OP / FS / TR / CB) sit at 39–54%, exactly the composite-like
+edits the patch head is supposed to catch, but this pass is page-level
+only. FPR lives on the two human-curated mixed slices — IID 4.39%,
+OOD-R 7.08%.
 
 ## COCO val2017 (FPR-only)
 
@@ -175,7 +194,7 @@ mAP and F1 on the fake class are undefined.
 
 **5 false positives / 5,000 → 0.10% FPR.**
 
-That matches CompEval (0.18%) and OpenFake core (0.21%) and is well under
+That matches CommunityForensics-Eval (0.18%) and OpenFake core (0.21%) and is well under
 the OpenFake reddit / MIRAGE in-the-wild FPR. The detector is not
 triggering on ordinary photographs.
 
@@ -224,7 +243,7 @@ uv run python runs/seer_vitl/eval_step27000/run_suite.py
 ```
 
 `--max-samples 0` on the OpenFake splits disables the 4,096-image
-train-loop cap and scores the full holdout. CompEval and MIRAGE read the
+train-loop cap and scores the full holdout. CommunityForensics-Eval and MIRAGE read the
 local parquet under `$SEER_DATA_ROOT/comfor-eval` and
 `$SEER_DATA_ROOT/mirage`; they do not stream the Hub if those dumps are
 present.
