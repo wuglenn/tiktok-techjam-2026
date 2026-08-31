@@ -62,15 +62,15 @@ weighted mix. Missing folder sources are dropped at train time, not fatal.
 
 | Source | Class | Weight | What it covers |
 |---|---|---|---|
-| **NTIRE 2026 train** | mixed | 0.28 | 42 gens (2022–2026), all 6 shards, real/fake matched |
-| **CommunityForensics-Small** | mixed | 0.22 | 4,803 open generators + paired reals. Eval is held out |
-| **OpenFake (selected)** | mixed | 0.16 | the 30 frontier/community generators this detector measurably misses + LAION/Pexels reals |
-| **GAS-Station v4 / v3** | fake | 0.10 / 0.09 | weekly open-model dumps after `wire_gasstation.py` |
-| **laion400m-1** | real | 0.16 | `jp1924/Laion400m-1` images in parquet (not a URL scrape) |
-| **Open Images V7** | real | 0.09 | validation + test photographs |
-| **FLUX-Reason-6M** | fake | 0.05 | 5.9M FLUX.1-dev; streamed |
-| **Frontier fakes** | fake | 0.05 | Midjourney / DALL-E / SD / Nano Banana Pro (label inverted) |
-| **SID_Set** | fake | 0.05 | full-synthetic only (drop real + tampered) |
+| **NTIRE 2026 train** | mixed | 0.224 | 42 gens (2022–2026), all 6 shards, real/fake matched |
+| **CommunityForensics-Small** | mixed | 0.176 | 4,803 open generators + paired reals. Eval is held out |
+| **OpenFake (selected)** | mixed | 0.128 | the 30 frontier/community generators this detector measurably misses + LAION/Pexels reals |
+| **GAS-Station v4 / v3** | fake | 0.08 / 0.072 | weekly open-model dumps after `wire_gasstation.py` |
+| **laion400m-1** | real | 0.128 | `jp1924/Laion400m-1` images in parquet (not a URL scrape) |
+| **Open Images V7** | real | 0.072 | validation + test photographs |
+| **FLUX-Reason-6M** | fake | 0.04 | 5.9M FLUX.1-dev; streamed |
+| **Frontier fakes** | fake | 0.04 | Midjourney / DALL·E / SD / Nano Banana Pro (label inverted) |
+| **SID_Set** | fake | 0.04 | full-synthetic only (drop real + tampered) |
 
 Roots: `$SEER_DATA_ROOT` (defaults to `/workspace/data` when that mount
 exists, else `F:/techjam`). Local parquet is read in streaming mode.
@@ -301,7 +301,7 @@ checkpoints therefore produce heatmaps too.
 
 `main.py eval` replicates the Pangram blog's setup:
 
-- **CommunityForensics-Eval (CompEval)** — 51.8K images, 21 generators incl.
+- **CommunityForensics-Eval** — 51.8K images, 21 generators incl.
   commercial ones; macro accuracy + mAP, per-architecture breakdown.
 - **Robustness sweeps** — `--perturbation all` evaluates every benchmark
   perturbation level (JPEG 90/70/50/30, blur 0.5/1/2, resize 0.5×/0.25×,

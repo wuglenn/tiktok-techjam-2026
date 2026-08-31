@@ -95,7 +95,7 @@ are never seen in training. The loader hard-refuses any path under a
 held-out marker.
 
 Measured: **0.10% FPR on 5,000 COCO val2017 photographs** (5 false
-positives), 0.18% on CompEval, 0.21% on 43,528 OpenFake reals it has never
+positives), 0.18% on CommunityForensics-Eval, 0.21% on 43,528 OpenFake reals it has never
 seen.
 
 ### 1.4 Interpretability and mixed real/AI images
@@ -248,16 +248,16 @@ source within that class by weight.
 
 | Source | HF / origin | Class | Weight | On disk |
 |---|---|---|---|---|
-| **NTIRE 2026 train** | `deepfakesMSU/NTIRE-RobustAIGenDetection-train` | mixed | 0.28 | 277,643 (177,643 fake / 100,000 real) — 42 generators, 2022–2026 |
-| **CommunityForensics-Small** | `OwensLab/CommunityForensics-Small` | mixed | 0.22 | 556,541 (278,445 / 278,096) — 4,782 generators |
-| **OpenFake (selected)** | `ComplexDataLab/OpenFake` `core/train` | mixed | 0.16 | 439,523 (309,523 / 130,000) — 30 recall-ranked generators |
-| **LAION-400M** | `jp1924/Laion400m-1` (gated) | real | 0.16 | 199,998 web-crawl photographs, `min(w,h) > 512` |
-| **GAS-Station v4** | `gasstation/gs-images-v4` | fake | 0.10 | 113,793 (15 model folders) |
-| **GAS-Station v3** | `gasstation/gs-images-v3` | fake | 0.09 | 426,689 (19 model folders) |
-| **Open Images V7** | CVDF S3 (val + test) | real | 0.09 | 167,055 photographs |
-| **FLUX-Reason-6M** | `LucasFang/FLUX-Reason-6M` | fake | 0.05 | 320,000 local slice of ~5.9M FLUX.1-dev |
-| **SID_Set** | `saberzl/SID_Set` | fake | 0.05 | 70,000 full-synthetic rows (real + tampered classes dropped) |
-| **Frontier fakes** | `julienlucas/midjourney-dalle-sd-nanobananapro-dataset` | fake | 0.05 | 5,195 Midjourney / DALL·E / SD / Nano Banana Pro (upstream label inverted) |
+| **NTIRE 2026 train** | `deepfakesMSU/NTIRE-RobustAIGenDetection-train` | mixed | 0.224 | 277,643 (177,643 fake / 100,000 real) — 42 generators, 2022–2026 |
+| **CommunityForensics-Small** | `OwensLab/CommunityForensics-Small` | mixed | 0.176 | 556,541 (278,445 / 278,096) — 4,782 generators |
+| **OpenFake (selected)** | `ComplexDataLab/OpenFake` `core/train` | mixed | 0.128 | 439,523 (309,523 / 130,000) — 30 recall-ranked generators |
+| **LAION-400M** | `jp1924/Laion400m-1` (gated) | real | 0.128 | 199,998 web-crawl photographs, `min(w,h) > 512` |
+| **GAS-Station v4** | `gasstation/gs-images-v4` | fake | 0.08 | 113,793 (15 model folders) |
+| **GAS-Station v3** | `gasstation/gs-images-v3` | fake | 0.072 | 426,689 (19 model folders) |
+| **Open Images V7** | CVDF S3 (val + test) | real | 0.072 | 167,055 photographs |
+| **FLUX-Reason-6M** | `LucasFang/FLUX-Reason-6M` | fake | 0.04 | 320,000 local slice of ~5.9M FLUX.1-dev |
+| **SID_Set** | `saberzl/SID_Set` | fake | 0.04 | 70,000 full-synthetic rows (real + tampered classes dropped) |
+| **Frontier fakes** | `julienlucas/midjourney-dalle-sd-nanobananapro-dataset` | fake | 0.04 | 5,195 Midjourney / DALL·E / SD / Nano Banana Pro (upstream label inverted) |
 
 Reals break down as NTIRE 31%, Community Forensics 24%, LAION 18%, OpenFake
 (Pexels + ReLAION) 18%, Open Images 10% — five different capture and curation
@@ -267,7 +267,7 @@ pipelines, which is what keeps FPR flat when the real distribution shifts.
 
 | Set | Size | What it tests |
 |---|---|---|
-| **CommunityForensics-Eval** | 51,836 (25,918/25,918), 21 generators | the Pangram CompEval protocol, per-architecture breakdown |
+| **CommunityForensics-Eval** | 51,836 (25,918/25,918), 21 generators | the Pangram evaluation protocol, per-architecture breakdown |
 | **OpenFake `core/test`** | 89,225 (45,697/43,528), 20 generators | unseen generators **and** unseen reals simultaneously — `gpt-image-1.5/2`, `nano-banana-pro`, `flux.2-klein-9b`, `z-image-turbo`, `midjourney-7`, `ideogram-2.0`, `recraft-v2/v3`, `sora-2`, `veo-3` vs DOCCI + ImageNet |
 | **OpenFake `reddit/test`** | 36,227 (29,116/7,111) | in the wild — AI subreddits vs photography subreddits, provenance unknown |
 | **MIRAGE** | 12,073 (10,682/1,391) | human-verified in-the-wild, incl. inpainting / face-swap / image-edit slices |
@@ -318,7 +318,7 @@ that produced them.
 | COCO val2017 (reals only) | 5,000 (0 / 5,000) | — | — | — | — | — | **0.10%** |
 
 Pangram Image — the commercial state of the art — reports 97.29% / 99.70%
-(macro accuracy / mAP) on CompEval. Seer is **1.64 points of macro accuracy
+(macro accuracy / mAP) on CommunityForensics-Eval. Seer is **1.64 points of macro accuracy
 and 0.08 points of mAP behind it at 15% of the parameter budget and on
 entirely public data**, with a lower FPR. Essentially the whole gap is false
 negatives, concentrated on pixel-space diffusion and a handful of stylized

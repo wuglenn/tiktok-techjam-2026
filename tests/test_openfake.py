@@ -159,8 +159,9 @@ def test_no_source_dominates_after_rebalancing(path):
     cfg = load_config(path)
     weights = {s.name: s.weight for s in cfg.data.sources}
     total = sum(weights.values())
-    assert weights["openfake"] == pytest.approx(0.16)
-    assert weights["laion400m-1"] == pytest.approx(0.16)
+    assert total == pytest.approx(1.0)
+    assert weights["openfake"] == pytest.approx(0.128)
+    assert weights["laion400m-1"] == pytest.approx(0.128)
     # the documented ceiling in docs/DATA_MIXTURE.md
     assert max(weights.values()) / total <= 0.25
     # openfake mass came out of the tiny repeated frontier pool

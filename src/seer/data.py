@@ -79,7 +79,7 @@ _COMFOR_EVAL_MARKERS = (
 )
 
 # Organisers' demonstration val (not scored): COCO val2017 reals + WildFake
-# DALL·E Advanced fakes. Same rule as CompEval — never train on these.
+# DALL·E Advanced fakes. Same rule as CommunityForensics-Eval — never train on these.
 _DEMO_VAL_MARKERS = (
     "coco-val2017",
     "/val2017/",
@@ -723,7 +723,7 @@ def _held_out_train_reason(blob: str) -> str:
 
 
 def assert_not_held_out_train(*parts: object, spec=None) -> None:
-    """Raise if a training source points at CompEval or the demo val pair."""
+    """Raise if a training source points at CommunityForensics-Eval or the demo val pair."""
     extra = []
     if spec is not None:
         extra = [

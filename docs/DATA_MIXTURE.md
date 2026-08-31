@@ -16,7 +16,8 @@ otherwise `F:/techjam`). Paths below are written as `$SEER_DATA_ROOT/<name>`.
 `MixtureDataset` first draws a class (real vs fake) with equal probability
 when `balance_labels` is on, then picks source *i* among sources that can
 produce that class with probability `weight_i / sum(weights in class)`.
-Weights are relative, not required to sum to 1.
+Weights are relative — the sampler renormalizes within the drawn class —
+and sum to 1.0 across all sources.
 
 A source that raises `FileNotFoundError` or is empty is dropped for the rest
 of the run (logged as `[data] dropping <name>`). That is how unwired
@@ -28,21 +29,21 @@ page/patch labels on top of this mix; they are not a separate source.
 
 ## Train sources
 
-Current yaml weights sum to **1.25**. The share column is `weight / 1.25`
-(source-draw share before `balance_labels`).
+Yaml weights sum to **1.0**, so each weight is that source's draw share
+before `balance_labels` picks the class.
 
-| Source | Class | Weight | Share | On-disk / stream | How to materialize |
-|---|---|---|---|---|---|
-| `comfor` | mixed (paired real + fake) | 0.22 | 17.6% | `$SEER_DATA_ROOT/commfor-small` (556,541: 278,445 fake / 278,096 real) | `scripts/fetch_data.py comfor-small` |
-| `ntire` | mixed (matched real + fake) | 0.28 | 22.4% | `$SEER_DATA_ROOT/ntire` (277,643: 177,643 fake / 100,000 real) | `python get_datasets.py --only ntire-train` |
-| `openfake` | mixed (selected fakes + reals) | 0.16 | 12.8% | `$SEER_DATA_ROOT/openfake/train` (439,523: 309,523 fake / 130,000 real) | `scripts/openfake.py fetch --from-rank …` |
-| `flux-reason` | fake | 0.05 | 4.0% | stream `LucasFang/FLUX-Reason-6M` (320,000 local slice; ~5.9M full) | optional slice: `scripts/fetch_data.py flux-reason-6m --max-shards 8` |
-| `frontier-fakes` | fake only | 0.05 | 4.0% | `$SEER_DATA_ROOT/frontier-fakes` (5,195 fakes used of 10,695) | `scripts/fetch_data.py frontier-fakes` |
-| `sid-set` | fake only (full synthetic) | 0.05 | 4.0% | `$SEER_DATA_ROOT/sid-set` (70,000 class-1 of 210,000) | optional slice: `scripts/fetch_data.py sid-set --max-shards 16` |
-| `gs-images-v3` | fake | 0.09 | 7.2% | `$SEER_DATA_ROOT/gs-images-v3/wired/images.txt` (426,689) | `scripts/wire_gasstation.py --versions v3` |
-| `gs-images-v4` | fake | 0.10 | 8.0% | `$SEER_DATA_ROOT/gs-images-v4/wired/images.txt` (113,793) | `scripts/wire_gasstation.py --versions v4` |
-| `laion400m-1` | real | 0.16 | 12.8% | `$SEER_DATA_ROOT/laion400m-1/real` (199,998, growing toward 400k) | `scripts/download_laion400m.py` |
-| `open-images-v7` | real | 0.09 | 7.2% | `$SEER_DATA_ROOT/open-images-v7` (167,055) | `scripts/download_open_images.py` |
+| Source | Class | Weight | On-disk / stream | How to materialize |
+|---|---|---|---|---|
+| `comfor` | mixed (paired real + fake) | 0.176 | `$SEER_DATA_ROOT/commfor-small` (556,541: 278,445 fake / 278,096 real) | `scripts/fetch_data.py comfor-small` |
+| `ntire` | mixed (matched real + fake) | 0.224 | `$SEER_DATA_ROOT/ntire` (277,643: 177,643 fake / 100,000 real) | `python get_datasets.py --only ntire-train` |
+| `openfake` | mixed (selected fakes + reals) | 0.128 | `$SEER_DATA_ROOT/openfake/train` (439,523: 309,523 fake / 130,000 real) | `scripts/openfake.py fetch --from-rank …` |
+| `flux-reason` | fake | 0.04 | stream `LucasFang/FLUX-Reason-6M` (320,000 local slice; ~5.9M full) | optional slice: `scripts/fetch_data.py flux-reason-6m --max-shards 8` |
+| `frontier-fakes` | fake only | 0.04 | `$SEER_DATA_ROOT/frontier-fakes` (5,195 fakes used of 10,695) | `scripts/fetch_data.py frontier-fakes` |
+| `sid-set` | fake only (full synthetic) | 0.04 | `$SEER_DATA_ROOT/sid-set` (70,000 class-1 of 210,000) | optional slice: `scripts/fetch_data.py sid-set --max-shards 16` |
+| `gs-images-v3` | fake | 0.072 | `$SEER_DATA_ROOT/gs-images-v3/wired/images.txt` (426,689) | `scripts/wire_gasstation.py --versions v3` |
+| `gs-images-v4` | fake | 0.08 | `$SEER_DATA_ROOT/gs-images-v4/wired/images.txt` (113,793) | `scripts/wire_gasstation.py --versions v4` |
+| `laion400m-1` | real | 0.128 | `$SEER_DATA_ROOT/laion400m-1/real` (199,998, growing toward 400k) | `scripts/download_laion400m.py` |
+| `open-images-v7` | real | 0.072 | `$SEER_DATA_ROOT/open-images-v7` (167,055) | `scripts/download_open_images.py` |
 
 Within-class shares (what a weight actually buys, since `balance_labels`
 picks the class first):
@@ -148,7 +149,7 @@ seen. Streamed sources can draw past the local slice.
 - Hub: `julienlucas/midjourney-dalle-sd-nanobananapro-dataset`, train split.
 - Upstream ClassLabel is inverted (`0=fake`, `1=real`). Yaml remaps then
   `keep_label: 1` so only fakes are trained. Train fakes are only ~5k;
-  the 0.08 weight is already larger than that pool can sustain without
+  the 0.04 weight is already larger than that pool can sustain without
   repeats.
 
 ### `sid-set` — SID_Set full synthetic
@@ -296,7 +297,7 @@ seen. Streamed sources can draw past the local slice.
   Do not snapshot the full 441-shard / ~4.4 TB dump.
 - **On disk:** **199,998** JPEGs from 9 of 441 shards (~42 GB). Default
   pull is 20 shards / 400k images / 90 GB; resume continues from shard 9.
-- Weight 0.16 matches `openfake`, so web-crawl reals are ~18% of real
+- Weight 0.128 matches `openfake`, so web-crawl reals are ~18% of real
   draws rather than an 11% footnote. This is the dedicated real-only
   source aimed at FPR on in-the-wild photographs.
 - Do not use `scripts/download_relaion.py` for this source.
@@ -316,7 +317,7 @@ seen. Streamed sources can draw past the local slice.
 | NTIRE public test | 2,500 (1,200 real / 1,300 fake) | Unseen proprietary generators | `python get_datasets.py --only ntire-test` |
 | OpenFake `core/test` | not pulled | Generators **and** real sources both unseen (`gpt-image-1.5/2`, `nano-banana-pro`, `flux.2-klein-9b`, `z-image-turbo`, `midjourney-7`, `ideogram-2.0`, `recraft-v2/v3`, `sora-2`, `veo-3` vs DOCCI + ImageNet reals) | `scripts/openfake.py holdout --config core` |
 | OpenFake `reddit/test` | not pulled | In-the-wild: AI subreddits vs photography subreddits | `scripts/openfake.py holdout --config reddit` |
-| CommunityForensics-Eval | 51,836 (25,918/25,918), 21 gens | Pangram CompEval protocol | streamed at `--dataset comfor_eval` |
+| CommunityForensics-Eval | 51,836 (25,918/25,918), 21 gens | Pangram's evaluation protocol | streamed at `--dataset comfor_eval` |
 | COCO val2017 | 5,000 reals | Real half of the organisers' reference pair | `python get_datasets.py --only coco-val2017` |
 | MIRAGE | 12,073 (10,682 fake / 1,391 real) | Small human-verified in-the-wild eval | `python get_datasets.py --only mirage` |
 | WikiArt / other real folders | — | FPR-only harness | `--dataset folders --real-dir …` |
