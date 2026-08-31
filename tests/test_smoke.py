@@ -18,11 +18,11 @@ from PIL import Image
 
 from seer.augment import eval_transform, jpeg_recompress, pangram_augment, train_transform
 from seer.config import SourceSpec, load_config
-from seer.data import BatchBuilder, build_train_dataset, load_sample_image
+from seer.data import BatchBuilder, DecodeError, SkipBatch, build_train_dataset, load_sample_image
 from seer.eval import compute_metrics
 from seer.heatmap import predict_and_explain, save_heatmap
 from seer.model import SeerDetector, EMA, build_param_groups, detection_loss, _patch_pos_weight
-from seer.train import cosine_schedule
+from seer.train import cosine_schedule, train_data_seed
 
 
 def _rand_pil(size=512, rng=random.Random(0)):
@@ -213,6 +213,23 @@ def test_composite_pairing_balance():
         assert torch.equal(x["labels"], (x["patch_labels"].amax(dim=1) > 0).float())
     assert n_real == n_fake
     print("composite pairing balance (page 1:1) OK")
+
+
+def test_overlay_shapes_not_just_rects():
+    """Hard occupancy is not always a filled axis-aligned rectangle."""
+    cfg = load_config(overrides=["res=224", "backbone=tiny", "pretrained=false"])
+    b = BatchBuilder(cfg, train=True, patch_grid=14, seed=1)
+    fills = []
+    for _ in range(48):
+        occ = b._rand_occupancy("hard")
+        hit = occ > 0.5
+        if not bool(hit.any()):
+            continue
+        ys, xs = torch.where(hit)
+        box = (int(ys.max()) - int(ys.min()) + 1) * (int(xs.max()) - int(xs.min()) + 1)
+        fills.append(float(hit.sum()) / max(box, 1))
+    assert fills and min(fills) < 0.85
+    print("overlay shapes not just rects OK")
 
 
 def test_overlay_crop_keeps_semantics():
@@ -562,6 +579,22 @@ def test_mixture_dataset(tmp_dirs=None):
         b = BatchBuilder(cfg, train=False, patch_grid=14, seed=0)
         batch = b([next(iter(ds)) for _ in range(4)])
         assert batch["images"].shape == (4, 3, 224, 224)
+
+        # resume offsets the mixture seed so the first samples are not the
+        # same prefix that a from-scratch run would have already consumed
+        assert train_data_seed(0, 0) == 0
+        assert train_data_seed(0, 28500) == 28500
+        specs = [
+            SourceSpec(name="a", type="folders", weight=1.0,
+                       real_dirs=[str(d / "real")], fake_dirs=[str(d / "fake")]),
+        ]
+        it = iter(MixtureDataset(specs, seed=0))
+        first = [next(it)["image_path"] for _ in range(8)]
+        it_resume = iter(MixtureDataset(specs, seed=train_data_seed(0, 28500)))
+        resumed = [next(it_resume)["image_path"] for _ in range(8)]
+        assert first != resumed
+        cfg.seed = 0
+        assert build_train_dataset(cfg, seed=28500).seed == 28500
     print("mixture dataset OK")
 
 
@@ -601,12 +634,46 @@ def test_local_parquet_source():
     print("local parquet source OK")
 
 
+def test_truncated_images_are_skipped():
+    """Garbage / truncated pixels must not kill collate."""
+    with pytest.raises(DecodeError):
+        load_sample_image({"image_bytes": b"not-an-image", "image_name": "junk.bin"})
+
+    img = _rand_pil(64)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=90)
+    raw = buf.getvalue()
+    # LOAD_TRUNCATED_IMAGES=True should still recover a partial JPEG.
+    recovered = load_sample_image({
+        "image_bytes": raw[: max(80, len(raw) // 2)],
+        "image_name": "trunc.jpg",
+    })
+    assert recovered.mode == "RGB" and recovered.size[0] > 0
+
+    cfg = load_config(overrides=["res=224", "composite.prob=0",
+                                 "max_steps=2", "backbone=tiny", "pretrained=false"])
+    builder = BatchBuilder(cfg, train=False, patch_grid=14, seed=0)
+    samples = [
+        {"image": _rand_pil(96, random.Random(0)), "label": 0, "generator": "g"},
+        {"image_bytes": b"xxxx", "image_name": "bad.jpg", "label": 1, "generator": "g"},
+        {"image": _rand_pil(96, random.Random(1)), "label": 1, "generator": "g"},
+    ]
+    batch = builder(samples)
+    assert batch["images"].shape == (2, 3, 224, 224)
+    assert batch["labels"].tolist() == [0.0, 1.0]
+
+    with pytest.raises(SkipBatch):
+        builder([{"image_bytes": b"nope", "image_name": "x", "label": 0, "generator": "g"}])
+    print("truncated / corrupt image skip OK")
+
+
 if __name__ == "__main__":
     test_budget_and_forward()
     test_train_step_and_ema()
     test_batch_builder_composites()
     test_composite_combinations()
     test_composite_pairing_balance()
+    test_overlay_shapes_not_just_rects()
     test_overlay_crop_keeps_semantics()
     test_augment_pipeline()
     test_perturbations()
@@ -616,4 +683,5 @@ if __name__ == "__main__":
     test_schedule()
     test_mixture_dataset()
     test_local_parquet_source()
+    test_truncated_images_are_skipped()
     print("\nALL SMOKE TESTS PASSED")

@@ -20,15 +20,37 @@ All samples are normalized to dicts:
 import dataclasses
 import hashlib
 import io
+import math
 import os
 import random
 import re
 from pathlib import Path
 from typing import Iterator, List, Mapping, Optional, Set
 
+import numpy as np
 import torch
 import torch.nn.functional as F
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFile, ImageFilter, UnidentifiedImageError
+
+# A truncated JPEG must not kill the train loop. Load what we can; anything
+# still unreadable is dropped in BatchBuilder / eval.
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+_IMAGE_ERRORS = (
+    OSError,
+    UnidentifiedImageError,
+    ValueError,
+    SyntaxError,
+    Image.DecompressionBombError,
+)
+
+
+class DecodeError(Exception):
+    """One sample's pixels could not be decoded. Skip it, do not stop the run."""
+
+
+class SkipBatch(Exception):
+    """Every sample in a collate batch failed to decode."""
 
 try:  # silence dataset download progress bars
     import datasets as hfds
@@ -230,34 +252,77 @@ def is_held_out(sample: dict) -> bool:
     return bool(_HOLDOUT_IDS) and sample_id(sample) in _HOLDOUT_IDS
 
 
+def _open_rgb(src) -> Image.Image:
+    """Open path/bytes/fileobj as RGB. Forces ``load()`` so truncate is here."""
+    img = Image.open(src)
+    img.load()
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    return img
+
+
 def _as_pil(value):
     """HF datasets can hand us decoded PIL images, numpy arrays or bytes."""
     if value is None:
         raise ValueError("null image")
-    if isinstance(value, Image.Image):
-        return value.convert("RGB")
-    if isinstance(value, (bytes, bytearray)):
-        return Image.open(io.BytesIO(bytes(value))).convert("RGB")
-    if isinstance(value, dict) and ("bytes" in value or "path" in value):
-        data = value.get("bytes")
-        if data:
-            return Image.open(io.BytesIO(data)).convert("RGB")
-        return Image.open(value["path"]).convert("RGB")
-    import numpy as np
+    try:
+        if isinstance(value, Image.Image):
+            img = value
+            img.load()
+            return img.convert("RGB") if img.mode != "RGB" else img
+        if isinstance(value, (bytes, bytearray)):
+            return _open_rgb(io.BytesIO(bytes(value)))
+        if isinstance(value, dict) and ("bytes" in value or "path" in value):
+            data = value.get("bytes")
+            if data:
+                return _open_rgb(io.BytesIO(data))
+            return _open_rgb(value["path"])
+        import numpy as np
 
-    return Image.fromarray(np.asarray(value)).convert("RGB")
+        return Image.fromarray(np.asarray(value)).convert("RGB")
+    except _IMAGE_ERRORS as exc:
+        raise DecodeError(str(exc)) from exc
+
+
+def _hf_lazy_image(value) -> dict:
+    """Keep HF image columns as bytes/path so a decode pool can do the PIL work."""
+    if value is None:
+        raise ValueError("null image")
+    if isinstance(value, (bytes, bytearray)):
+        return {"image": None, "image_bytes": bytes(value), "image_path": ""}
+    if isinstance(value, dict):
+        data = value.get("bytes")
+        path = value.get("path") or ""
+        if data:
+            return {"image": None, "image_bytes": bytes(data), "image_path": path}
+        if path:
+            return {"image": None, "image_bytes": None, "image_path": path}
+    return {"image": _as_pil(value), "image_bytes": None, "image_path": ""}
+
+
+def _sample_ref(s: dict) -> str:
+    return str(s.get("image_path") or s.get("image_name") or s.get("source") or "?")
 
 
 def load_sample_image(s: dict) -> Image.Image:
     """Materialize the PIL image of a sample, whether it carries an eager
     image, raw bytes (lazy parquet decode) or a file path."""
-    if s.get("image") is not None:
-        return s["image"]
-    if s.get("image_bytes"):
-        return Image.open(io.BytesIO(s["image_bytes"])).convert("RGB")
-    if s.get("image_path"):
-        return Image.open(s["image_path"]).convert("RGB")
-    raise ValueError("sample has no image / image_bytes / image_path")
+    try:
+        if s.get("image") is not None:
+            img = s["image"]
+            if isinstance(img, Image.Image):
+                img.load()
+                return img.convert("RGB") if img.mode != "RGB" else img
+            return _as_pil(img)
+        if s.get("image_bytes"):
+            return _open_rgb(io.BytesIO(s["image_bytes"]))
+        if s.get("image_path"):
+            return _open_rgb(s["image_path"])
+        raise ValueError("sample has no image / image_bytes / image_path")
+    except DecodeError:
+        raise
+    except _IMAGE_ERRORS as exc:
+        raise DecodeError(f"{_sample_ref(s)}: {exc}") from exc
 
 
 class ComforStream(torch.utils.data.IterableDataset):
@@ -367,6 +432,7 @@ class HFGenericStream(torch.utils.data.IterableDataset):
         label_map: Optional[Mapping] = None,
         keep_label: Optional[int] = None,
         local_dirs: Optional[List[str]] = None,
+        lazy_decode: bool = True,
     ):
         super().__init__()
         if hfds is None:
@@ -384,6 +450,7 @@ class HFGenericStream(torch.utils.data.IterableDataset):
         self._label_map = dict(label_map) if label_map else None
         self._keep_label = keep_label
         self._local_files = parquet_files(local_dirs) if local_dirs else None
+        self._lazy_decode = lazy_decode
 
     def _label_of(self, row: dict) -> Optional[int]:
         if self._label_col is not None:
@@ -414,13 +481,23 @@ class HFGenericStream(torch.utils.data.IterableDataset):
                     continue
                 if self._keep_label is not None and int(lab) != int(self._keep_label):
                     continue
-                img = _as_pil(row.get(self._image_col))
                 gen = str(row.get(self._generator_col)) if self._generator_col else self._name
                 name = _row_image_name(row, self._image_col)
-                sample = {"image": img, "label": int(lab), "generator": gen or self._name,
-                          "architecture": "", "image_name": name}
-                if not name:
-                    sample["content_id"] = _pil_id(img)
+                payload = (
+                    _hf_lazy_image(row.get(self._image_col))
+                    if self._lazy_decode else
+                    {"image": _as_pil(row.get(self._image_col)),
+                     "image_bytes": None, "image_path": ""}
+                )
+                sample = {
+                    **payload,
+                    "label": int(lab),
+                    "generator": gen or self._name,
+                    "architecture": "",
+                    "image_name": name or payload.get("image_path") or "",
+                }
+                if not sample["image_name"] and payload.get("image") is not None:
+                    sample["content_id"] = _pil_id(payload["image"])
             except Exception:
                 continue
             if first:
@@ -473,10 +550,12 @@ class FolderDataset(torch.utils.data.Dataset):
         return len(self.files)
 
     def __getitem__(self, i) -> dict:
-        img = Image.open(self.files[i]).convert("RGB")
-        gen = Path(self.files[i]).parent.name
-        return {"image": img, "label": self.label, "generator": gen,
-                "architecture": "", "image_name": self.files[i]}
+        path = self.files[i]
+        gen = Path(path).parent.name
+        # Decode later (eval thread pool / BatchBuilder). Iterating a
+        # 90k-image holdout must not JPEG-decode on the sampler thread.
+        return {"image": None, "image_path": path, "label": self.label,
+                "generator": gen, "architecture": "", "image_name": path}
 
 
 class FolderPairStream:
@@ -850,11 +929,12 @@ class ConcatDataset(torch.utils.data.Dataset):
         raise IndexError
 
 
-def build_train_dataset(cfg) -> torch.utils.data.Dataset:
+def build_train_dataset(cfg, seed: Optional[int] = None) -> torch.utils.data.Dataset:
     d = cfg.data
+    seed = cfg.seed if seed is None else int(seed)
     if d.source == "mixture" and d.sources:
         return MixtureDataset(
-            d.sources, seed=cfg.seed, balance_labels=d.balance_labels
+            d.sources, seed=seed, balance_labels=d.balance_labels
         )
     if d.source in ("mixture", "comfor"):
         assert_not_held_out_train(d.dataset, *(d.local_dirs or []))
@@ -864,7 +944,7 @@ def build_train_dataset(cfg) -> torch.utils.data.Dataset:
             split=d.split,
             shuffle_buffer=d.shuffle_buffer,
             max_samples=d.max_samples,
-            seed=cfg.seed,
+            seed=seed,
             local_dirs=d.local_dirs or None,
         )
     if d.source == "folders":
@@ -879,7 +959,7 @@ def build_train_dataset(cfg) -> torch.utils.data.Dataset:
         return NtireStream(
             split=d.split,
             max_samples=d.max_samples,
-            seed=cfg.seed,
+            seed=seed,
         )
     raise ValueError(f"Unknown data source '{d.source}'")
 
@@ -1037,10 +1117,14 @@ class BatchBuilder:
         state["_pool"] = None
         return state
 
-    def _process_one(self, s: dict, seed: int) -> torch.Tensor:
+    def _process_one(self, s: dict, seed: int):
         from .augment import eval_transform, train_transform
 
-        img = load_sample_image(s)
+        try:
+            img = load_sample_image(s)
+        except DecodeError as exc:
+            print(f"[data] skip truncated/corrupt image: {exc}", flush=True)
+            return None
         if self.train:
             return train_transform(img, self.res, random.Random(seed), self.cfg.augment)
         return eval_transform(img, self.res)
@@ -1088,37 +1172,107 @@ class BatchBuilder:
             counts[i] += 1
         return dict(zip(names, counts))
 
-    def _rand_rect(self):
-        """One random rectangle in patch-grid space -> (y0, x0, h, w) in cells."""
-        G = self.G
-        w = max(1, int(G * self.rng.uniform(0.15, 0.7)))
-        h = max(1, int(G * self.rng.uniform(0.15, 0.7)))
-        return self.rng.randint(0, G - h), self.rng.randint(0, G - w), h, w
+    def _rand_extent(self):
+        """Center + half-axes in pixels; coverage similar to the old 15–70% rects."""
+        res = float(self.res)
+        rx = res * self.rng.uniform(0.15, 0.70) / 2.0
+        ry = res * self.rng.uniform(0.15, 0.70) / 2.0
+        cx = self.rng.uniform(rx, res - rx)
+        cy = self.rng.uniform(ry, res - ry)
+        return cx, cy, rx, ry
 
-    def _region_maps(self, rect, overlay, feather):
-        """Occupancy + RGB alpha (res x res) for one paste.
+    def _noise_mask(self):
+        """Thresholded low-frequency field — holes, islands, any outline."""
+        g = self.rng.randint(5, 12)
+        raw = np.empty((g, g), dtype=np.float32)
+        for i in range(g):
+            for j in range(g):
+                raw[i, j] = self.rng.random()
+        field = np.asarray(
+            Image.fromarray((raw * 255).astype(np.uint8), "L").resize(
+                (self.res, self.res), Image.BICUBIC,
+            ),
+            dtype=np.float32,
+        )
+        t = np.quantile(field, 1.0 - self.rng.uniform(0.12, 0.35))
+        return Image.fromarray(np.where(field >= t, 255, 0).astype(np.uint8), "L")
 
-        Overlay and feather are independent:
-          overlay "paste" - opaque (alpha = occupancy)
-          overlay "blend" - occupancy × Uniform(0.75, 1.0)
-          feather "hard"  - crisp patch-aligned rectangle
-          feather "soft"  - bilinear fade across the shared cell edge
-        Occupancy is the spatial region only — blend opacity does not
-        shrink it — so labels can follow `occ > 0.5` without a 40% mix
-        becoming a 0.4 target.
+    def _draw_shape(self, draw, kind):
+        """Paint one geometric silhouette into a PIL mask."""
+        cx, cy, rx, ry = self._rand_extent()
+        if kind == "rect":
+            draw.rectangle([cx - rx, cy - ry, cx + rx, cy + ry], fill=255)
+            return
+        if kind == "ellipse":
+            draw.ellipse([cx - rx, cy - ry, cx + rx, cy + ry], fill=255)
+            return
+        if kind == "rotated_rect":
+            ang = self.rng.uniform(0.0, 2.0 * math.pi)
+            c, s = math.cos(ang), math.sin(ang)
+            pts = []
+            for dx, dy in ((-rx, -ry), (rx, -ry), (rx, ry), (-rx, ry)):
+                pts.append((cx + dx * c - dy * s, cy + dx * s + dy * c))
+            draw.polygon(pts, fill=255)
+            return
+        if kind == "polygon":
+            n = self.rng.randint(3, 8)
+            pts = []
+            for i in range(n):
+                a = 2.0 * math.pi * i / n + self.rng.uniform(-0.25, 0.25)
+                rs = self.rng.uniform(0.40, 1.0)
+                pts.append((cx + rx * rs * math.cos(a), cy + ry * rs * math.sin(a)))
+            draw.polygon(pts, fill=255)
+            return
+        if kind == "star":
+            n = self.rng.randint(5, 8)
+            inner = self.rng.uniform(0.25, 0.50)
+            pts = []
+            for i in range(n * 2):
+                a = math.pi * i / n
+                r = 1.0 if i % 2 == 0 else inner
+                pts.append((cx + rx * r * math.cos(a), cy + ry * r * math.sin(a)))
+            draw.polygon(pts, fill=255)
+            return
+        for _ in range(self.rng.randint(2, 5)):
+            jx = cx + self.rng.uniform(-rx, rx) * 0.65
+            jy = cy + self.rng.uniform(-ry, ry) * 0.65
+            erx = rx * self.rng.uniform(0.35, 0.85)
+            ery = ry * self.rng.uniform(0.35, 0.85)
+            draw.ellipse([jx - erx, jy - ery, jx + erx, jy + ery], fill=255)
+
+    def _rand_occupancy(self, feather):
+        """Occupancy (res x res) in [0, 1] with an arbitrary silhouette.
+
+        Hard feather is a crisp mask; soft feathers the same outline with a
+        ~1-patch Gaussian fade. Blend opacity is applied later and does not
+        change this occupancy.
         """
-        y0, x0, h, w = rect
-        if feather == "hard":
-            c = self.res // self.G
-            occ = torch.zeros(self.res, self.res)
-            occ[y0 * c:(y0 + h) * c, x0 * c:(x0 + w) * c] = 1.0
+        kind = self.rng.choice((
+            "rect", "rotated_rect", "ellipse", "polygon", "star", "blob", "noise",
+        ))
+        if kind == "noise":
+            mask = self._noise_mask()
         else:
-            m = torch.zeros(self.G, self.G)
-            m[y0:y0 + h, x0:x0 + w] = 1.0
-            occ = F.interpolate(
-                m[None, None], size=(self.res, self.res),
-                mode="bilinear", align_corners=False,
-            )[0, 0].clamp(0.0, 1.0)
+            mask = Image.new("L", (self.res, self.res), 0)
+            self._draw_shape(ImageDraw.Draw(mask), kind)
+        if feather == "soft":
+            radius = max(1.0, (self.res / self.G) * self.rng.uniform(0.4, 1.2))
+            mask = mask.filter(ImageFilter.GaussianBlur(radius=radius))
+        return torch.from_numpy(np.asarray(mask, dtype=np.float32) / 255.0)
+
+    def _mask_bbox(self, occ):
+        """Inclusive-exclusive pixel box around nonzero occupancy, or None."""
+        hit = occ > 1e-3
+        if not bool(hit.any()):
+            return None
+        ys, xs = torch.where(hit)
+        return (
+            int(ys.min()), int(xs.min()),
+            int(ys.max()) + 1, int(xs.max()) + 1,
+        )
+
+    def _region_maps(self, occ, overlay):
+        """RGB alpha from occupancy. Blend scales alpha; occupancy is unchanged."""
         if overlay == "blend":
             return occ * self.rng.uniform(0.75, 1.0), occ
         return occ, occ
@@ -1168,20 +1322,28 @@ class BatchBuilder:
     def _paste(self, img, src_img, lab, src_lab):
         """Layer a crop of `src_img` / `src_lab` over `img` / `lab` in place.
 
-        Each overlay draws its own blend-vs-paste and hard-vs-soft feather.
-        RGB uses that alpha; labels follow occupancy, not blend opacity:
-        overlay class where occ > 0.5, else base. A 40% fake mix is still
-        fake (1), not 0.4. Soft-feather seams go mixed later via average-pool.
+        Each overlay draws its own freeform silhouette, blend-vs-paste, and
+        hard-vs-soft feather. RGB uses that alpha; labels follow occupancy,
+        not blend opacity: overlay class where occ > 0.5, else base.
         """
         overlay, feather = self._pick_overlay(), self._pick_feather()
-        y0, x0, h, w = self._rand_rect()
-        c = self.res // self.G
-        alpha, occ = self._region_maps((y0, x0, h, w), overlay, feather)
-        margin = c if feather == "soft" else 0
-        py, px, ph, pw = y0 * c, x0 * c, h * c, w * c
-        wy0, wx0 = max(0, py - margin), max(0, px - margin)
-        wy1 = min(self.res, py + ph + margin)
-        wx1 = min(self.res, px + pw + margin)
+        occ = box = None
+        for _ in range(8):
+            cand = self._rand_occupancy(feather)
+            b = self._mask_bbox(cand)
+            if b is None:
+                continue
+            y0, x0, y1, x1 = b
+            if y1 - y0 < 8 or x1 - x0 < 8:
+                continue
+            if int((cand > 0.5).sum()) < max(64, (self.res * self.res) // 200):
+                continue
+            occ, box = cand, b
+            break
+        if occ is None:
+            return
+        alpha, occ = self._region_maps(occ, overlay)
+        wy0, wx0, wy1, wx1 = box
         _, H, W = src_img.shape
         geom = self._crop_geom(H, W, wy1 - wy0, wx1 - wx0)
         crop = self._resample_crop(src_img, *geom, wy1 - wy0, wx1 - wx0)
@@ -1211,7 +1373,8 @@ class BatchBuilder:
         receive FoR/RoF/FoF, real slots only RoR. Later overlays on a
         fake page are independently real or fake; RoR stays all-real.
         Each sample gets n ~ Uniform{1,...,k} pastes (k = max_overlays),
-        and every paste draws its own blend/paste and hard/soft feather.
+        and every paste draws its own freeform silhouette (rect, ellipse,
+        polygon, star, blob, noise, …), blend/paste, and hard/soft feather.
 
         Overlay crops keep a large, difficulty-varying fraction of the
         source so semantic content survives the shrink-to-window. Pixel
@@ -1313,6 +1476,14 @@ class BatchBuilder:
             imgs = list(pool.map(lambda p: self._process_one(*p), zip(samples, seeds)))
         else:
             imgs = [self._process_one(s, seed) for s, seed in zip(samples, seeds)]
+        kept = [(s, img) for s, img in zip(samples, imgs) if img is not None]
+        if not kept:
+            raise SkipBatch("all samples failed to decode")
+        n_drop = len(samples) - len(kept)
+        if n_drop:
+            print(f"[data] dropped {n_drop}/{len(samples)} undecodable sample(s)", flush=True)
+        samples = [s for s, _ in kept]
+        imgs = [img for _, img in kept]
 
         labels = torch.tensor([float(s["label"]) for s in samples], dtype=torch.float32)
         images = torch.stack(imgs)
@@ -1381,18 +1552,27 @@ class Prefetcher:
             stream = torch.cuda.Stream(device=device) if device.type == "cuda" else None
             try:
                 for batch in batch_iterable:
-                    if stream is not None:
-                        pinned = {
-                            k: v.pin_memory() if torch.is_tensor(v) else v
-                            for k, v in batch.items()
-                        }
-                        with torch.cuda.stream(stream):
-                            batch = {
-                                k: v.to(device, non_blocking=True) if torch.is_tensor(v) else v
-                                for k, v in pinned.items()
+                    try:
+                        if stream is not None:
+                            pinned = {
+                                k: v.pin_memory() if torch.is_tensor(v) else v
+                                for k, v in batch.items()
                             }
-                        stream.synchronize()
-                    self.q.put(batch)
+                            with torch.cuda.stream(stream):
+                                batch = {
+                                    k: v.to(device, non_blocking=True) if torch.is_tensor(v) else v
+                                    for k, v in pinned.items()
+                                }
+                            stream.synchronize()
+                        self.q.put(batch)
+                    except Exception as exc:
+                        # One truncated JPEG used to kill this thread (put None
+                        # → StopIteration). Skip the batch and keep fetching.
+                        print(
+                            f"[data] skip batch ({type(exc).__name__}): {exc}",
+                            flush=True,
+                        )
+                        continue
             finally:
                 self.q.put(None)
 

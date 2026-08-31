@@ -42,6 +42,7 @@ hf_cache/
 
 # --- Generated sample images ---
 samples/
+out/
 
 # --- Training runs (logs, heatmaps, checkpoints) ---
 runs/

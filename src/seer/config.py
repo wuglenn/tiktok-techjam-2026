@@ -157,7 +157,8 @@ class CompositeConfig:
 
     Overlays are large, difficulty-varying crops of the source (easy ≈
     the full frame, hard still a substantial region — not a texture chip)
-    pasted into random regions, and a composited sample receives a stack
+    pasted into random freeform regions (rect, ellipse, polygon, star,
+    blob, noise — not just rectangles), and a composited sample receives a stack
     of 1..max_overlays pastes. Each paste independently draws an overlay
     style (alpha blend or hard paste) and a feather (hard or soft), so
     one stacked image can mix all four combinations. RGB uses that
@@ -188,8 +189,8 @@ class CompositeConfig:
                          "paste" opaque overlay (sticker / screenshot)
                          "mixed" randomly choose per overlay
     feather           - edge of the overlay, drawn independently per paste:
-                         "hard"  crisp patch-aligned rectangle
-                         "soft"  bilinear fade across the shared cell edge
+                         "hard"  crisp silhouette
+                         "soft"  Gaussian fade along the outline
                          "mixed" randomly choose per overlay
     """
 

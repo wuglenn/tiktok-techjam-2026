@@ -48,6 +48,15 @@ def set_seed(seed: int):
     torch.cuda.manual_seed_all(seed)
 
 
+def train_data_seed(cfg_seed: int, start_step: int) -> int:
+    """Offset mixture/aug RNG by the resume step so the stream does not
+    replay the same prefix. Exact skip of ``start_step`` decoded batches
+    would re-read millions of images; a new seeded shuffle is cheap and
+    still avoids re-seeing the opening of the mix. Val stays on val_seed.
+    """
+    return int(cfg_seed) + max(0, int(start_step))
+
+
 def infinite(loader):
     while True:
         for batch in loader:
@@ -268,6 +277,41 @@ def _log(msg: str):
     print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
+def _build_train_loader(cfg: TrainConfig, model, data_seed: int) -> DataLoader:
+    train_ds = build_train_dataset(cfg, seed=data_seed)
+    if getattr(train_ds, "sources", None):
+        for spec, w in zip(train_ds.sources, train_ds.weights):
+            extra = f" local={spec.local_dirs}" if getattr(spec, "local_dirs", None) else ""
+            _log(f"[data]   {spec.name} type={spec.type} weight={w:.2f}{extra}")
+        _log(
+            f"[data] balance_labels={getattr(train_ds, 'balance_labels', False)} "
+            f"decode_workers={cfg.decode_workers} loader_readers={cfg.loader_readers} "
+            f"prefetch_depth={cfg.prefetch_depth}"
+        )
+    n_readers = max(1, int(cfg.loader_readers))
+    if n_readers > 1 and isinstance(train_ds, MixtureDataset):
+        sources = train_ds.sources
+        bal = train_ds.balance_labels
+        train_ds = ThreadedSampleQueue(
+            lambda i, sources=sources, bal=bal, seed=data_seed: iter(
+                MixtureDataset(sources, seed=seed + i * 1009, balance_labels=bal)
+            ),
+            n_readers=n_readers,
+            queue_size=max(512, cfg.batch_size * 8),
+        )
+        _log(f"[data] {n_readers} parallel mixture readers")
+    collate = BatchBuilder(
+        cfg, train=True, patch_grid=model.patch_grid(cfg.res), seed=data_seed
+    )
+    return DataLoader(
+        train_ds,
+        batch_size=cfg.batch_size,
+        collate_fn=collate,
+        num_workers=0,  # stay in-process: CUDA is already initialized
+        drop_last=True,
+    )
+
+
 def _gpu_mem() -> str:
     if not torch.cuda.is_available():
         return ""
@@ -325,40 +369,6 @@ def run(cfg: TrainConfig):
     # ------------------------------------------------------------- data
     _log("[data] collecting held-out val from every source")
     _cached_val_samples(cfg)
-    _log("[data] building train mixture")
-    train_ds = build_train_dataset(cfg)
-    if getattr(train_ds, "sources", None):
-        for spec, w in zip(train_ds.sources, train_ds.weights):
-            extra = f" local={spec.local_dirs}" if getattr(spec, "local_dirs", None) else ""
-            _log(f"[data]   {spec.name} type={spec.type} weight={w:.2f}{extra}")
-        _log(
-            f"[data] balance_labels={getattr(train_ds, 'balance_labels', False)} "
-            f"decode_workers={cfg.decode_workers} loader_readers={cfg.loader_readers} "
-            f"prefetch_depth={cfg.prefetch_depth}"
-        )
-    n_readers = max(1, int(cfg.loader_readers))
-    if n_readers > 1 and isinstance(train_ds, MixtureDataset):
-        sources = train_ds.sources
-        bal = train_ds.balance_labels
-        seed = cfg.seed
-        train_ds = ThreadedSampleQueue(
-            lambda i, sources=sources, bal=bal, seed=seed: iter(
-                MixtureDataset(sources, seed=seed + i * 1009, balance_labels=bal)
-            ),
-            n_readers=n_readers,
-            queue_size=max(512, cfg.batch_size * 8),
-        )
-        _log(f"[data] {n_readers} parallel mixture readers")
-    collate = BatchBuilder(
-        cfg, train=True, patch_grid=model.patch_grid(cfg.res), seed=cfg.seed
-    )
-    loader = DataLoader(
-        train_ds,
-        batch_size=cfg.batch_size,
-        collate_fn=collate,
-        num_workers=0,  # stay in-process: CUDA is already initialized
-        drop_last=True,
-    )
 
     spe = _steps_per_epoch(cfg)
     total_steps = cfg.max_steps or (
@@ -401,6 +411,16 @@ def run(cfg: TrainConfig):
         start_step = ckpt.get("step", 0)
         best_metric = ckpt.get("metrics", {}).get("val_balanced_acc", -1.0)
         _log(f"[seer] resumed from {cfg.resume} at step {start_step}")
+
+    data_seed = train_data_seed(cfg.seed, start_step)
+    if start_step:
+        set_seed(data_seed)
+        _log(
+            f"[data] resume: offsetting mixture/aug seed by {start_step} "
+            f"(seed {data_seed}) so the stream does not replay the prefix"
+        )
+    _log("[data] building train mixture")
+    loader = _build_train_loader(cfg, model, data_seed)
 
     # ------------------------------------------------------------- loop
     # CUDA: decode+H2D copy overlap with compute via a background thread.

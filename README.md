@@ -228,9 +228,10 @@ Even the largest supported backbone stays under budget; the default leaves
   itself a discontinuity, so *all four*
   top-on-base pairings are trained — fake-over-real (localized labels),
   real-over-fake (inverted labels), fake-over-fake (label 1 everywhere),
-  real-over-real (label stays real). Each overlay independently draws
-  alpha-blend vs hard-paste and hard vs soft feather, so one stacked
-  image can mix all four combinations. RGB uses that alpha; labels
+  real-over-real (label stays real). Each overlay independently draws a
+  freeform silhouette (rect, ellipse, polygon, star, blob, noise),
+  alpha-blend vs hard-paste, and hard vs soft feather, so one stacked
+  image can mix those combinations. RGB uses that alpha; labels
   follow occupancy, not blend opacity (a 40% mix is still fake, not a
   0.4 target). Soft-feather seams stay mixed after average-pool; the
   page target is binary (any visible AI → fake). Label maps travel with

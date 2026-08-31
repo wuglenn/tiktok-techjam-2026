@@ -21,8 +21,13 @@ Pangram blog are printed next to ours for a direct comparison.
 import heapq
 import json
 import os
+import queue
 import random
+import sys
+import threading
+import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -31,9 +36,17 @@ import torch
 from tqdm import tqdm
 
 from .augment import PERTURBATIONS, apply_perturbation, eval_transform, perturbation_names
-from .data import ComforStream, FolderDataset, NtireStream, load_sample_image
+from .data import (
+    ComforStream,
+    DecodeError,
+    FolderDataset,
+    HFGenericStream,
+    NtireStream,
+    load_sample_image,
+)
 from .heatmap import patch_logits_to_heat, save_heatmap
 from .model import load_checkpoint
+from .paths import DATA_ROOT
 
 # ---------------------------------------------------------------------------
 # Published numbers (Pangram Image blog, Jul 2026) for context in reports.
@@ -53,6 +66,17 @@ PUBLISHED = {
 EVAL_SPECS = {
     "comfor_eval": dict(dataset="OwensLab/CommunityForensics-Eval", split="CompEval"),
     "comfor_small": dict(dataset="OwensLab/CommunityForensics-Small", split="train"),
+}
+
+# Human-verified in-the-wild set (HF parquet on disk after get_datasets.py).
+MIRAGE_EVAL = {
+    "mirage": dict(
+        dataset="MIRAGE-GROUP/MIRAGE",
+        split="test",
+        image_col="image",
+        label_col="label",
+        generator_col="source",
+    ),
 }
 
 NTIRE_EVAL = {
@@ -246,7 +270,13 @@ def _chunked(ds, batch_size: int, max_samples: Optional[int] = None):
 
 
 def known_eval_datasets() -> list:
-    return list(EVAL_SPECS) + list(NTIRE_EVAL) + list(OPENFAKE_EVAL) + ["folders"]
+    return list(EVAL_SPECS) + list(NTIRE_EVAL) + list(OPENFAKE_EVAL) + list(MIRAGE_EVAL) + ["folders"]
+
+
+def _local_parquet_dirs(*keys: str) -> Optional[List[str]]:
+    dirs = [DATA_ROOT / key for key in keys]
+    found = [str(d) for d in dirs if d.exists() and any(d.rglob("*.parquet"))]
+    return found or None
 
 
 def _take_stratified(files: List[str], n: int, rng: random.Random) -> List[str]:
@@ -325,12 +355,27 @@ def _build_eval_dataset(dataset, real_dirs=None, fake_dirs=None,
     if dataset == "folders":
         parts = []
         if real_dirs:
-            parts.append(FolderDataset(real_dirs, 0))
+            parts.append(FolderDataset(real_dirs, 0, allow_held_out=True))
         if fake_dirs:
-            parts.append(FolderDataset(fake_dirs, 1))
+            parts.append(FolderDataset(fake_dirs, 1, allow_held_out=True))
         if not parts:
             raise ValueError("folders eval needs --real-dir and/or --fake-dir")
         return torch.utils.data.ConcatDataset(parts)
+    if dataset in MIRAGE_EVAL:
+        spec = MIRAGE_EVAL[dataset]
+        local = _local_parquet_dirs("mirage")
+        return HFGenericStream(
+            dataset=spec["dataset"],
+            split=spec["split"],
+            image_col=spec["image_col"],
+            label_col=spec["label_col"],
+            generator_col=spec["generator_col"],
+            shuffle_buffer=0,
+            max_samples=None,
+            seed=0,
+            name="mirage",
+            local_dirs=local,
+        )
     if dataset in NTIRE_EVAL:
         hit = _NTIRE_SAMPLE_CACHE.get(dataset)
         if hit is not None:
@@ -347,8 +392,14 @@ def _build_eval_dataset(dataset, real_dirs=None, fake_dirs=None,
     spec = EVAL_SPECS.get(dataset)
     if spec is None:
         raise ValueError(f"Unknown eval dataset '{dataset}' (try {known_eval_datasets()})")
+    local = None
+    if dataset == "comfor_eval":
+        local = _local_parquet_dirs("comfor-eval")
+    elif dataset == "comfor_small":
+        local = _local_parquet_dirs("commfor-small")
     return ComforStream(dataset=spec["dataset"], split=spec["split"],
-                         shuffle_buffer=1024, max_samples=None, seed=0)
+                         shuffle_buffer=0, max_samples=None, seed=0,
+                         local_dirs=local)
 
 
 def _tag_eval_sample(sample: dict, dataset: str) -> dict:
@@ -358,9 +409,69 @@ def _tag_eval_sample(sample: dict, dataset: str) -> dict:
         sample.setdefault("source_type", "ntire")
     elif str(dataset).startswith("comfor"):
         sample.setdefault("source_type", "comfor")
+    elif dataset in MIRAGE_EVAL:
+        sample.setdefault("source_type", "mirage")
     elif dataset == "folders" or dataset in OPENFAKE_EVAL:
         sample.setdefault("source_type", "folders")
     return sample
+
+
+def _decode_eval_sample(sample: dict, perturb_fn, res: int):
+    try:
+        img = load_sample_image(sample)
+    except DecodeError as exc:
+        print(f"[eval] skip truncated/corrupt image: {exc}", flush=True)
+        return None
+    if perturb_fn is not None:
+        img = perturb_fn(img)
+    return img, eval_transform(img, res)
+
+
+def _prepare_eval_batch(chunk, perturb_fn, res: int, pool: Optional[ThreadPoolExecutor]):
+    if pool is not None and len(chunk) > 1:
+        pairs = list(pool.map(lambda s: _decode_eval_sample(s, perturb_fn, res), chunk))
+    else:
+        pairs = [_decode_eval_sample(s, perturb_fn, res) for s in chunk]
+    kept = [(s, p) for s, p in zip(chunk, pairs) if p is not None]
+    if not kept:
+        return None
+    chunk = [s for s, _ in kept]
+    imgs = [p[0] for _, p in kept]
+    x = torch.stack([p[1] for _, p in kept])
+    if torch.cuda.is_available():
+        x = x.pin_memory()
+    return chunk, imgs, x
+
+
+def _prefetch_eval_batches(ds, batch_size, chunk_cap, perturb_fn, res, workers=8, depth=2):
+    """Decode the next few batches on CPU while the GPU scores the current one."""
+    workers = max(1, int(workers))
+    depth = max(1, int(depth))
+    out: "queue.Queue" = queue.Queue(maxsize=depth)
+    sentinel = object()
+
+    def worker():
+        pool = ThreadPoolExecutor(max_workers=workers) if workers > 1 else None
+        try:
+            for chunk in _chunked(ds, batch_size, chunk_cap):
+                out.put(_prepare_eval_batch(chunk, perturb_fn, res, pool))
+        except Exception as exc:
+            out.put(exc)
+        finally:
+            if pool is not None:
+                pool.shutdown(wait=False)
+            out.put(sentinel)
+
+    threading.Thread(target=worker, daemon=True).start()
+    while True:
+        item = out.get()
+        if item is sentinel:
+            break
+        if isinstance(item, Exception):
+            raise item
+        if item is None:
+            continue
+        yield item
 
 
 @torch.no_grad()
@@ -381,15 +492,28 @@ def _single_pass(model, cfg_dict, perturbation: Optional[str], augmented: bool,
 
     pert_name = perturbation or ("pangram" if augmented else "clean")
     perturb_fn = (lambda im: apply_perturbation(im, pert_name)) if pert_name != "clean" else None
+    decode_workers = int(cfg_dict.get("decode_workers") or 16)
+    prefetch_depth = int(cfg_dict.get("prefetch_depth") or 3)
 
     probs, labels, archs, distorted, dist_keys = [], [], [], [], []
     errors_fp, errors_fn = [], []
-    for chunk in tqdm(_chunked(ds, batch_size, chunk_cap),
-                      desc=f"eval[{pert_name}]", unit="img", disable=None):
-        imgs = [load_sample_image(s) for s in chunk]
-        if perturb_fn is not None:
-            imgs = [perturb_fn(im) for im in imgs]
-        x = torch.stack([eval_transform(im, res) for im in imgs]).to(device)
+    t0 = time.time()
+    seen = 0
+    show_tqdm = sys.stderr.isatty()
+    batches = _prefetch_eval_batches(
+        ds, batch_size, chunk_cap, perturb_fn, res,
+        workers=decode_workers, depth=prefetch_depth,
+    )
+    try:
+        n_hint = len(ds)  # type: ignore[arg-type]
+    except TypeError:
+        n_hint = None
+    progress = tqdm(
+        batches, desc=f"eval[{pert_name}]", unit="batch", disable=not show_tqdm,
+        total=(n_hint + batch_size - 1) // batch_size if n_hint else None,
+    )
+    for chunk, imgs, x in progress:
+        x = x.to(device, non_blocking=True)
         with torch.autocast(device.type, dtype=torch.bfloat16, enabled=(device.type == "cuda")):
             out = model(x)
             p = torch.sigmoid(out["logits"]).float()
@@ -424,6 +548,15 @@ def _single_pass(model, cfg_dict, perturbation: Optional[str], augmented: bool,
                     errors_fp.append((sample, float(prob)))
                 elif y == 1 and prob < 0.5:
                     errors_fn.append((sample, float(prob)))
+        seen += len(chunk)
+        if not show_tqdm and (seen == len(chunk) or seen % (batch_size * 20) == 0):
+            dt = max(1e-6, time.time() - t0)
+            print(
+                f"[eval.{dataset}] {seen}"
+                f"{'' if n_hint is None else '/' + str(n_hint)} imgs  "
+                f"{seen / dt:.1f} img/s",
+                flush=True,
+            )
 
     probs = np.array(probs)
     labels = np.array(labels)
