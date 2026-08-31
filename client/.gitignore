@@ -1,0 +1,23 @@
+# dependencies
+node_modules/
+
+# next.js
+.next/
+out/
+next-env.d.ts
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+
+# local inference scratch space (uploads handed to the Python bridge)
+.seer-tmp/
+
+# env
+.env*.local
+
+# typescript
+*.tsbuildinfo

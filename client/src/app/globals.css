@@ -1,0 +1,109 @@
+@import "tailwindcss";
+
+@theme inline {
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", sans-serif;
+}
+
+@theme {
+  --animate-shimmer: shimmer 1.8s linear infinite;
+  @keyframes shimmer {
+    from {
+      background-position: 200% 0;
+    }
+    to {
+      background-position: -200% 0;
+    }
+  }
+  --animate-rise: rise 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(12px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  --animate-pulse-dot: pulse-dot 2.2s ease-in-out infinite;
+  @keyframes pulse-dot {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.3;
+    }
+  }
+}
+
+/* glass panel */
+@utility panel {
+  @apply rounded-2xl border border-white/[0.07] bg-zinc-900/40 backdrop-blur-xl;
+}
+
+/* gradient display text */
+@utility text-gradient {
+  @apply bg-linear-to-r from-cyan-300 to-sky-500 bg-clip-text text-transparent;
+}
+
+/* faint blueprint grid for hero / section backgrounds */
+@utility bg-grid-faint {
+  background-image: linear-gradient(
+      to right,
+      rgba(255, 255, 255, 0.035) 1px,
+      transparent 1px
+    ),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 52px 52px;
+}
+
+/* skeleton shimmer */
+@utility skeleton {
+  @apply rounded-xl bg-linear-to-r from-zinc-800/50 via-zinc-700/60 to-zinc-800/50 bg-[length:200%_100%] animate-shimmer;
+}
+
+html {
+  color-scheme: dark;
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: #08080a;
+  color: #f4f4f5;
+  background-image: radial-gradient(
+    640px circle at 12% -8%,
+    rgba(34, 211, 238, 0.07),
+    transparent 55%
+  );
+  background-attachment: fixed;
+}
+
+::selection {
+  background: rgba(34, 211, 238, 0.28);
+  color: #fff;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.18);
+  background-clip: content-box;
+}
+
+/* number-heavy metrics read better with tabular figures */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
