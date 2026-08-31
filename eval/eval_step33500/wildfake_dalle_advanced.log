@@ -1,0 +1,50 @@
+[eval] 8843 images, workers=16 batch=32 (process decode)
+[eval.folders] 32/8843 imgs  0.3 img/s
+[eval.folders] 512/8843 imgs  4.3 img/s
+[eval.folders] 1024/8843 imgs  8.4 img/s
+[eval.folders] 1536/8843 imgs  12.4 img/s
+[eval.folders] 2048/8843 imgs  16.3 img/s
+[eval.folders] 2560/8843 imgs  20.0 img/s
+[eval.folders] 3072/8843 imgs  23.7 img/s
+[eval.folders] 3584/8843 imgs  27.2 img/s
+[eval.folders] 4096/8843 imgs  30.6 img/s
+[eval.folders] 4608/8843 imgs  33.9 img/s
+[eval.folders] 5120/8843 imgs  37.2 img/s
+[eval.folders] 5632/8843 imgs  40.3 img/s
+[eval.folders] 6144/8843 imgs  43.3 img/s
+[eval.folders] 6656/8843 imgs  46.3 img/s
+[eval.folders] 7168/8843 imgs  49.1 img/s
+[eval.folders] 7680/8843 imgs  52.0 img/s
+[eval.folders] 8192/8843 imgs  54.7 img/s
+[eval.folders] 8704/8843 imgs  57.4 img/s
+
+  error analysis [clean] -> runs/seer_vitl/eval_step33500/errors_dalle_advanced
+    false positive (real called AI): none
+    false negative (AI called real):
+      P(AI)=0.032  202311070924598319e76b1a88ba6c fn_01_p0.032_1d4135eb385210a437a2c66e5a1487c1.png
+      P(AI)=0.089  202311070924598319e76b1a88ba6c fn_02_p0.089_028b1feecc4b4099cfa277a93c725eea.png
+      P(AI)=0.103  202311011943129901ca391019566e fn_03_p0.103_95dd959ea9b96dcef876c87b57fcc58b.png
+      P(AI)=0.111  20231102143933b82206831d45b85d fn_04_p0.111_830e6b1cfa79dcb875db2f09e838e863.png
+      P(AI)=0.111  2023110215025084768300d30fc34f fn_05_p0.111_830e6b1cfa79dcb875db2f09e838e863.png
+      P(AI)=0.111  20231103102150b17aad067ad7e034 fn_06_p0.111_830e6b1cfa79dcb875db2f09e838e863.png
+
+========================================================================
+ Seer on folders [CLEAN]
+========================================================================
+  macro accuracy : 49.94%
+  mAP            : n/a
+  AUROC          : n/a
+  F1             : 99.94%
+  precision / rec: 100.00% / 99.88%
+  accuracy       : 99.88%
+  FPR / FNR      : 0.00% / 0.12%  (n=8843)
+  per architecture:
+    202311011943129901ca391019566e macro_acc=  49.97% mAP=     n/a F1=  99.97% AUROC=     n/a FPR=   0.00% (n=1718)
+    20231102143933b82206831d45b85d macro_acc=  49.94% mAP=     n/a F1=  99.94% AUROC=     n/a FPR=   0.00% (n=1808)
+    2023110215025084768300d30fc34f macro_acc=  49.94% mAP=     n/a F1=  99.94% AUROC=     n/a FPR=   0.00% (n=1808)
+    20231102153107b5de8e3a8d244d4d macro_acc=  50.00% mAP=     n/a F1= 100.00% AUROC=     n/a FPR=   0.00% (n=9)
+    20231103102150b17aad067ad7e034 macro_acc=  49.94% mAP=     n/a F1=  99.94% AUROC=     n/a FPR=   0.00% (n=1695)
+    202311070924598319e76b1a88ba6c macro_acc=  49.89% mAP=     n/a F1=  99.89% AUROC=     n/a FPR=   0.00% (n=1805)
+========================================================================
+
+[seer] metrics written to runs/seer_vitl/eval_step33500/wildfake_dalle_advanced.json
