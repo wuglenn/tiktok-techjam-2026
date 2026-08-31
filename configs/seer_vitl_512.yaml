@@ -190,3 +190,4 @@ composite:
   balance_patch: true            # pos_weight = n_real_patches / n_fake_patches
   mode: mixed                # per overlay: alpha blend or hard overlay
   feather: mixed             # per overlay: hard edge or soft fade
+  post_prob: 1.0             # shared JPEG/resize/noise after stacking (aligned)

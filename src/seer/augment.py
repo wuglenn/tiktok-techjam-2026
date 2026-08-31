@@ -37,6 +37,14 @@ def _to_tensor(img: Image.Image) -> torch.Tensor:
     return (t - mean) / std
 
 
+def _from_tensor(t: torch.Tensor) -> Image.Image:
+    """Inverse of `_to_tensor` for a second encode pass (post-composite)."""
+    mean = torch.tensor(IMAGENET_MEAN, dtype=t.dtype).view(3, 1, 1)
+    std = torch.tensor(IMAGENET_STD, dtype=t.dtype).view(3, 1, 1)
+    x = (t.detach().float().cpu() * std + mean).clamp(0.0, 1.0)
+    return Image.fromarray((x.permute(1, 2, 0).numpy() * 255.0).round().astype(np.uint8))
+
+
 def jpeg_recompress(img: Image.Image, quality: float) -> Image.Image:
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=int(round(quality)))
@@ -153,6 +161,82 @@ def train_transform(img: Image.Image, res: int, rng: random.Random, cfg) -> torc
         t = t + torch.randn_like(t) * rng.choice(cfg.noise_levels)
 
     return t
+
+
+# Extra kinds that keep pixels registered to the patch grid. Crop / flip /
+# rotate / DCT-grid shift would move the composite silhouette off its labels.
+_ALIGNED_EXTRA = (
+    "jpeg", "doublejpeg", "webp", "blur", "impulse", "quantize", "motion",
+    "shift", "pixelate", "bright", "chroma", "median", "unsharp",
+    "gamma", "grain", "aberr", "fftlp", "autocontrast", "posterize",
+    "social", "resample", "surface", "phase", "hue", "wb", "chroman",
+    "equalize", "vignette", "speckle", "recode",
+)
+
+
+def post_stack_transform(t: torch.Tensor, res: int, rng: random.Random, cfg) -> torch.Tensor:
+    """One shared wild-sim pass on an already-normalized (C, res, res) tensor.
+
+    Same JPEG / WebP / downscale / blur / noise family as ``train_transform``,
+    but no crop or flip: the draw applies to the whole image so independently
+    augmented layers no longer keep mismatched codec/noise fingerprints, and
+    composite patch labels stay aligned.
+    """
+    img = _from_tensor(t)
+    if img.size != (res, res):
+        img = img.resize((res, res), Image.BICUBIC)
+
+    if rng.random() < cfg.color_jitter_prob:
+        j = cfg.color_jitter
+        img = ImageEnhance.Brightness(img).enhance(1.0 + rng.uniform(-j, j))
+        img = ImageEnhance.Contrast(img).enhance(1.0 + rng.uniform(-j, j))
+        img = ImageEnhance.Color(img).enhance(1.0 + rng.uniform(-j, j))
+
+    if rng.random() < cfg.grayscale_prob:
+        img = img.convert("L").convert("RGB")
+
+    r = rng.random()
+    if r < cfg.jpeg_prob:
+        img = jpeg_recompress(img, rng.choice(cfg.jpeg_quality))
+    elif r < cfg.jpeg_prob + cfg.webp_prob:
+        img = webp_recompress(img, rng.choice(cfg.webp_quality))
+
+    if rng.random() < cfg.blur_prob:
+        img = img.filter(ImageFilter.GaussianBlur(rng.choice(cfg.blur_sigma)))
+
+    extra_p = float(getattr(cfg, "extra_distort_prob", 0.0) or 0.0)
+    extra_n = max(1, int(getattr(cfg, "extra_distort_max", 1) or 1))
+    if extra_p > 0 and rng.random() < extra_p:
+        for _ in range(rng.randint(1, extra_n)):
+            img = _extra_train_distort(img, rng, kinds=_ALIGNED_EXTRA)
+
+    if rng.random() < 0.08:
+        img = _hue_shift(img, rng.uniform(-18.0, 18.0))
+    if rng.random() < 0.08:
+        img = _white_balance(img, rng.uniform(0.82, 1.18), rng.uniform(0.82, 1.18))
+
+    out = _to_tensor(img)
+    if out.shape[-2:] != (res, res):
+        out = F.interpolate(
+            out[None], size=(res, res), mode="bilinear",
+            align_corners=False, antialias=True,
+        )[0]
+
+    if rng.random() < cfg.downscale_prob:
+        s = rng.choice(cfg.downscale_levels)
+        small = max(res // 16, int(round(res * s)))
+        out = F.interpolate(
+            out[None], size=(small, small), mode="bilinear",
+            align_corners=False, antialias=True,
+        )
+        out = F.interpolate(
+            out, size=(res, res), mode="bilinear",
+            align_corners=False, antialias=True,
+        )[0]
+
+    if rng.random() < cfg.noise_prob:
+        out = out + torch.randn_like(out) * rng.choice(cfg.noise_levels)
+    return out
 
 
 # ------------------------------------------------------------- eval transforms
@@ -467,9 +551,10 @@ def _recode_stack(img: Image.Image, rng: Optional[random.Random] = None) -> Imag
     return jpeg_recompress(img, rng.choice((45, 30, 20)))
 
 
-def _extra_train_distort(img: Image.Image, rng: random.Random) -> Image.Image:
+def _extra_train_distort(img: Image.Image, rng: random.Random,
+                         kinds=None) -> Image.Image:
     """One op harder than the Pangram table, aimed at hiding generator cues."""
-    kind = rng.choice((
+    kind = rng.choice(kinds if kinds is not None else (
         "jpeg", "doublejpeg", "webp", "blur", "impulse", "quantize", "motion",
         "shift", "pixelate", "bright", "chroma", "median", "unsharp", "rotate",
         "nudge", "gamma", "grain", "aberr", "fftlp", "autocontrast",

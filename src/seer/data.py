@@ -1383,11 +1383,14 @@ class BatchBuilder:
         fake/real seam stays mixed; the page target is binary (any
         visible AI → fake). Later overlays may read already-composited
         slots; their label maps travel with them.
+
+        After the last paste, a shared aligned wild-sim pass covers the
+        whole image so per-layer JPEG/noise mismatch is not a shortcut.
         """
         B = images.shape[0]
         comp = self.comp
         if comp is None:
-            return images, labels, patch_labels
+            return images, labels, patch_labels, []
         orig = labels.clone()
         by_cls = {c: [j for j in range(B) if float(orig[j]) == c] for c in (0.0, 1.0)}
         H, W = int(images.shape[-2]), int(images.shape[-1])
@@ -1411,6 +1414,8 @@ class BatchBuilder:
                     return src
             return None
 
+        stacked = []
+
         def stack(i, base, first_src, stay_real=False):
             """`base` (current pixels/labels) + n pastes; first from `first_src`."""
             src_img = images[first_src].clone()
@@ -1429,6 +1434,7 @@ class BatchBuilder:
             pl = F.avg_pool2d(pixel_lab[i][None], cell, stride=cell)[0, 0].clamp(0.0, 1.0)
             patch_labels[i] = pl.flatten()
             labels[i] = 1.0 if float(pl.max()) > 0.0 else 0.0
+            stacked.append(i)
 
         reals = list(by_cls[0.0])
         fakes = list(by_cls[1.0])
@@ -1464,7 +1470,7 @@ class BatchBuilder:
             if partners:
                 stack(i, i, self.rng.choice(partners), stay_real=True)
 
-        return images, labels, patch_labels
+        return images, labels, patch_labels, stacked
 
     # -- collate -------------------------------------------------------------
 
@@ -1491,9 +1497,42 @@ class BatchBuilder:
         patch_labels = labels.view(-1, 1).expand(-1, P).clone().contiguous()
 
         if self.comp is not None and self.comp.prob > 0:
-            images, labels, patch_labels = self._apply_composites(images, labels, patch_labels)
+            images, labels, patch_labels, stacked = self._apply_composites(
+                images, labels, patch_labels
+            )
+            images = self._post_stack(images, stacked)
 
         return {"images": images, "labels": labels, "patch_labels": patch_labels}
+
+    def _post_stack(self, images, idxs):
+        """Shared aligned wild-sim on finished composites (not per layer)."""
+        from .augment import post_stack_transform
+
+        post_p = float(getattr(self.comp, "post_prob", 1.0) or 0.0)
+        if post_p <= 0 or not idxs:
+            return images
+        chosen, seeds = [], []
+        for i in idxs:
+            if self.rng.random() < post_p:
+                chosen.append(i)
+                seeds.append(self.rng.randrange(1 << 30))
+        if not chosen:
+            return images
+
+        def one(pair):
+            i, seed = pair
+            return i, post_stack_transform(
+                images[i], self.res, random.Random(seed), self.cfg.augment
+            )
+
+        pool = self._ensure_pool()
+        if pool is not None and len(chosen) > 1:
+            out = list(pool.map(one, zip(chosen, seeds)))
+        else:
+            out = [one(p) for p in zip(chosen, seeds)]
+        for i, t in out:
+            images[i] = t
+        return images
 
 
 class ThreadedSampleQueue(torch.utils.data.IterableDataset):

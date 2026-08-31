@@ -16,7 +16,10 @@ import pytest
 import torch
 from PIL import Image
 
-from seer.augment import eval_transform, jpeg_recompress, pangram_augment, train_transform
+from seer.augment import (
+    eval_transform, jpeg_recompress, pangram_augment, post_stack_transform,
+    train_transform,
+)
 from seer.config import SourceSpec, load_config
 from seer.data import BatchBuilder, DecodeError, SkipBatch, build_train_dataset, load_sample_image
 from seer.eval import compute_metrics
@@ -213,6 +216,54 @@ def test_composite_pairing_balance():
         assert torch.equal(x["labels"], (x["patch_labels"].amax(dim=1) > 0).float())
     assert n_real == n_fake
     print("composite pairing balance (page 1:1) OK")
+
+
+def test_post_stack_shared_pass():
+    """Composites get one aligned wild-sim pass after stacking.
+
+    Per-layer train_transform still runs first; the shared pass then
+    covers the whole page so mismatched JPEG/noise is not a shortcut.
+    Patch labels stay registered (no crop).
+    """
+    common = [
+        "res=224", "backbone=tiny", "pretrained=false",
+        "composite.prob=1.0", "composite.max_overlays=1",
+        "augment.jpeg_prob=1.0", "augment.webp_prob=0",
+        "augment.extra_distort_prob=0", "augment.downscale_prob=0",
+        "augment.blur_prob=0", "augment.noise_prob=0",
+        "augment.color_jitter_prob=0", "augment.grayscale_prob=0",
+        "augment.hflip_prob=0",
+    ]
+    samples = [
+        {"image": _rand_pil(480, random.Random(i)), "label": i % 2,
+         "generator": "g", "architecture": "LatDiff"}
+        for i in range(8)
+    ]
+    off = load_config(overrides=common + ["composite.post_prob=0"])
+    on = load_config(overrides=common + ["composite.post_prob=1"])
+    x0 = BatchBuilder(off, train=True, patch_grid=14, seed=0)(samples)
+    x1 = BatchBuilder(on, train=True, patch_grid=14, seed=0)(samples)
+    assert torch.equal(x0["labels"], x1["labels"])
+    assert torch.equal(x0["patch_labels"], x1["patch_labels"])
+    # at least one stacked page must change; the shared JPEG is global
+    assert not torch.allclose(x0["images"], x1["images"], atol=1e-5)
+    assert torch.isfinite(x1["images"]).all()
+
+    cfg = load_config().augment
+    cfg.jpeg_prob = 1.0
+    cfg.webp_prob = 0.0
+    cfg.extra_distort_prob = 0.0
+    cfg.downscale_prob = 0.0
+    cfg.blur_prob = 0.0
+    cfg.noise_prob = 0.0
+    cfg.color_jitter_prob = 0.0
+    cfg.grayscale_prob = 0.0
+    t = train_transform(_rand_pil(224, random.Random(3)), 224, random.Random(4), cfg)
+    out = post_stack_transform(t, 224, random.Random(5), cfg)
+    assert out.shape == t.shape
+    assert torch.isfinite(out).all()
+    assert not torch.allclose(out, t, atol=1e-4)
+    print("post-stack shared pass OK")
 
 
 def test_overlay_shapes_not_just_rects():
@@ -673,6 +724,7 @@ if __name__ == "__main__":
     test_batch_builder_composites()
     test_composite_combinations()
     test_composite_pairing_balance()
+    test_post_stack_shared_pass()
     test_overlay_shapes_not_just_rects()
     test_overlay_crop_keeps_semantics()
     test_augment_pipeline()

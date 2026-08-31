@@ -168,6 +168,12 @@ class CompositeConfig:
     Already-composited slots may be sources; their label maps travel
     with the crop.
 
+    After every overlay is down, a shared wild-sim pass (JPEG/WebP,
+    downscale, blur, noise — no crop) runs on the finished image so
+    independently-augmented layers do not keep mismatched artifacts
+    the local head can use as a seam shortcut. Patch labels stay
+    registered because the pass is spatially aligned.
+
     prob               - chance a fake sample is composited (one of the
                          three label-1 pairings above)
     real_on_real      - weight of RoR relative to the three fake pairings
@@ -192,6 +198,8 @@ class CompositeConfig:
                          "hard"  crisp silhouette
                          "soft"  Gaussian fade along the outline
                          "mixed" randomly choose per overlay
+    post_prob         - chance a finished composite gets the shared
+                        aligned wild-sim pass (1 = always)
     """
 
     prob: float = 0.25
@@ -205,6 +213,7 @@ class CompositeConfig:
     balance_patch: bool = True
     mode: str = "mixed"
     feather: str = "mixed"
+    post_prob: float = 1.0
 
 
 @dataclass
