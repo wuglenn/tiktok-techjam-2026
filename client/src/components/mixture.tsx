@@ -28,7 +28,7 @@ const SOURCES: MixtureSource[] = [
     key: "ntire",
     name: "NTIRE 2026 train",
     cls: "mixed",
-    weight: 0.28,
+    weight: 0.224,
     fake: 177643,
     real: 100000,
     total: 277643,
@@ -40,7 +40,7 @@ const SOURCES: MixtureSource[] = [
     key: "comfor",
     name: "CommunityForensics-Small",
     cls: "mixed",
-    weight: 0.22,
+    weight: 0.176,
     fake: 278445,
     real: 278096,
     total: 556541,
@@ -53,7 +53,7 @@ const SOURCES: MixtureSource[] = [
     key: "openfake",
     name: "OpenFake (selected)",
     cls: "mixed",
-    weight: 0.16,
+    weight: 0.128,
     fake: 309523,
     real: 130000,
     total: 439523,
@@ -66,7 +66,7 @@ const SOURCES: MixtureSource[] = [
     key: "laion400m-1",
     name: "laion400m-1",
     cls: "real",
-    weight: 0.16,
+    weight: 0.128,
     real: 199998,
     total: 199998,
     note: "Hosted LAION-400M images in parquet (not a URL scrape), size-filtered to >512px per side; growing toward 400k.",
@@ -77,7 +77,7 @@ const SOURCES: MixtureSource[] = [
     key: "gs-images-v4",
     name: "GAS-Station v4",
     cls: "fake",
-    weight: 0.1,
+    weight: 0.08,
     fake: 113793,
     total: 113793,
     generators: "15 model folders (58,733 unlabeled)",
@@ -89,7 +89,7 @@ const SOURCES: MixtureSource[] = [
     key: "gs-images-v3",
     name: "GAS-Station v3",
     cls: "fake",
-    weight: 0.09,
+    weight: 0.072,
     fake: 426689,
     total: 426689,
     generators: "19 model folders (186,579 unlabeled)",
@@ -101,7 +101,7 @@ const SOURCES: MixtureSource[] = [
     key: "open-images-v7",
     name: "Open Images V7",
     cls: "real",
-    weight: 0.09,
+    weight: 0.072,
     real: 167055,
     total: 167055,
     note: "Web photographs from the CVDF S3 dump (validation + test splits).",
@@ -112,7 +112,7 @@ const SOURCES: MixtureSource[] = [
     key: "flux-reason",
     name: "FLUX-Reason-6M",
     cls: "fake",
-    weight: 0.05,
+    weight: 0.04,
     fake: 320000,
     total: 320000,
     generators: "FLUX.1-dev only",
@@ -124,7 +124,7 @@ const SOURCES: MixtureSource[] = [
     key: "frontier-fakes",
     name: "Frontier fakes",
     cls: "fake",
-    weight: 0.05,
+    weight: 0.04,
     fake: 5195,
     total: 10695,
     generators: "untagged Midjourney / DALL-E / SD / Nano Banana Pro",
@@ -136,7 +136,7 @@ const SOURCES: MixtureSource[] = [
     key: "sid-set",
     name: "SID_Set",
     cls: "fake",
-    weight: 0.05,
+    weight: 0.04,
     fake: 70000,
     total: 210000,
     generators: "untagged (full-synthetic only)",
@@ -183,11 +183,11 @@ export function MixtureTable() {
               <span className="h-1.5 overflow-hidden rounded-full bg-white/[0.05]">
                 <span
                   className="block h-full rounded-full bg-cyan-400/50"
-                  style={{ width: `${(m.weight / 0.28) * 100}%` }}
+                  style={{ width: `${(m.weight / 0.224) * 100}%` }}
                 />
               </span>
               <span className="tabular justify-self-end text-xs font-medium text-zinc-300">
-                {m.weight.toFixed(2)}
+                {m.weight.toFixed(3)}
               </span>
             </button>
             {isOpen && <SourceDetail m={m} />}
@@ -200,7 +200,7 @@ export function MixtureTable() {
           <span className="tabular font-semibold text-zinc-200">2,576,437</span>{" "}
           images — 1,701,288 fake · 875,149 real
         </span>
-        <span>weights sum to 1.25</span>
+        <span>weights sum to 1</span>
       </div>
     </div>
   );

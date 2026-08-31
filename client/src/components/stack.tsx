@@ -100,8 +100,8 @@ const TABS: StackTab[] = [
   },
   {
     key: "models",
-    label: "Models & APIs",
-    hint: "backbone, heads, and external services",
+    label: "Models",
+    hint: "the backbone",
     groups: [
       {
         label: "Backbone",
@@ -112,62 +112,10 @@ const TABS: StackTab[] = [
             role: "The backbone: DINOv3 ViT-L/16, 24 blocks, 1024-d, self-supervised on LVD-1689M. Fully fine-tuned for detection rather than used as a frozen feature extractor.",
             href: "https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m",
           },
-          {
-            name: "camenduru/dinov3-vitl16-pretrain-lvd1689m",
-            meta: "mirror",
-            role: "Community mirror of the same weights, used on pods where the licence gate was not accepted.",
-            href: "https://huggingface.co/camenduru/dinov3-vitl16-pretrain-lvd1689m",
-          },
-          {
-            name: "facebook/dinov2-large · dinov2-small",
-            meta: "fallback",
-            role: "Ungated fallbacks in the same parameter class and a debug tier. The code path is backbone-agnostic and handles DINOv2 positional-encoding interpolation against DINOv3 RoPE.",
-            href: "https://huggingface.co/facebook/dinov2-large",
-          },
-        ],
-      },
-      {
-        label: "Heads — trained from scratch",
-        items: [
-          {
-            name: "Global head",
-            meta: "verdict",
-            role: "LayerNorm(2048) → Linear(2048, 1024) → GELU → Dropout → Linear(1024, 1) over the concatenation of [CLS ; mean(patch tokens)], producing one image-level logit.",
-          },
-          {
-            name: "Local head",
-            meta: "heatmap",
-            role: "Linear(1024, 1) applied per patch token → 1,024 logits on a 32×32 grid, sigmoid'd and bilinearly upsampled into the overlay.",
-          },
-          {
-            name: "Probe heads",
-            meta: "ablation",
-            role: "LayerNorm + linear over a concatenation of four block taps (6/12/18/23), ~37k parameters — the frozen-feature baseline that measures whether full fine-tuning was necessary.",
-          },
-        ],
-      },
-      {
-        label: "External APIs",
-        items: [
-          {
-            name: "Hugging Face Hub HTTP API",
-            role: "Dataset and weight resolution, repo_sha revision pinning, and byte-range parquet reads.",
-          },
-          {
-            name: "CVDF S3",
-            meta: "Open Images V7",
-            role: "Real-image acquisition from the validation and test dumps.",
-            href: "https://storage.googleapis.com/openimages/web/index.html",
-          },
-          {
-            name: "No third-party inference APIs",
-            meta: "by design",
-            role: "Nothing is sent to a commercial detector or an LLM at train, eval, or inference time — the model runs entirely locally. Pangram Image's published numbers are quoted from their technical blog purely as a comparison target.",
-          },
         ],
       },
     ],
-    note: "Attention kernels are resolved at load time with graceful degradation: flash_attention_4 → flash_attention_3 → flash_attention_2 → sdpa, so the same checkpoint runs on a hackathon laptop and on an H100.",
+    note: "Attention runs on PyTorch's scaled-dot-product attention (sdpa).",
   },
   {
     key: "libs",
@@ -299,7 +247,7 @@ const TABS: StackTab[] = [
           {
             name: "Ten weighted public sources",
             meta: "detailed above",
-            role: "NTIRE 2026 train (0.28), CommunityForensics-Small (0.22), OpenFake core/train selected by measured difficulty (0.16), LAION-400M (0.16), GAS-Station v4 (0.10) and v3 (0.09), Open Images V7 (0.09), FLUX-Reason-6M (0.05), SID_Set (0.05), frontier fakes (0.05). Expand any row in the mixture table above for counts, generators, and its fetch command.",
+            role: "NTIRE 2026 train (0.224), CommunityForensics-Small (0.176), OpenFake core/train selected by measured difficulty (0.128), LAION-400M (0.128), GAS-Station v4 (0.08) and v3 (0.072), Open Images V7 (0.072), FLUX-Reason-6M (0.04), SID_Set (0.04), frontier fakes (0.04). Expand any row in the mixture table above for counts, generators, and its fetch command.",
           },
           {
             name: "Real-image breadth",

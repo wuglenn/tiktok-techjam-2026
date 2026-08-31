@@ -1,4 +1,4 @@
-import { turboGradientCss } from "@/lib/heat";
+import { syntheticGrid, turbo, turboGradientCss } from "@/lib/heat";
 
 /**
  * Data-flow diagram for the architecture section: input -> backbone -> fork
@@ -46,7 +46,7 @@ export function FlowDiagram() {
               </div>
             </div>
             <VArrow label="sigmoid" compact />
-            <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-3 text-center">
+            <div className="flex flex-1 flex-col justify-center rounded-xl border border-white/[0.08] bg-white/[0.03] px-3.5 py-3 text-center">
               <div className="text-xs font-semibold text-white">P(AI)</div>
               <div className="mt-1.5 flex items-center gap-2">
                 <span className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-white/[0.06]">
@@ -77,12 +77,17 @@ export function FlowDiagram() {
               <div className="text-xs font-semibold text-white">
                 32×32 probability grid
               </div>
-              <div
-                className="mt-2 h-1.5 rounded-full ring-1 ring-white/10"
-                style={{ background: turboGradientCss() }}
-              />
-              <div className="mt-1 text-[10px] text-zinc-600">
-                one probability per patch
+              <PatchGrid prob={0.987} />
+              <div className="mt-2 flex items-center gap-2">
+                <span className="tabular text-[9px] text-zinc-600">0</span>
+                <span
+                  className="h-1 flex-1 rounded-full ring-1 ring-white/10"
+                  style={{ background: turboGradientCss() }}
+                />
+                <span className="tabular text-[9px] text-zinc-600">1</span>
+              </div>
+              <div className="mt-1.5 text-[10px] text-zinc-600">
+                one probability per patch — warm cells mark generated regions
               </div>
             </div>
           </Branch>
@@ -120,6 +125,38 @@ export function FlowDiagram() {
 }
 
 /* ---------------------------------------------------------------- pieces */
+
+/**
+ * The local head's output rendered as the real 32×32 grid: one cell per
+ * patch, turbo-colored by its sigmoid probability. Deterministic
+ * (seeded blob field), so it renders identically on the server.
+ */
+function PatchGrid({ prob, seed = 11 }: { prob: number; seed?: number }) {
+  const grid = syntheticGrid(seed, prob);
+  return (
+    <div
+      className="mx-auto mt-2 grid aspect-square w-full overflow-hidden rounded-md ring-1 ring-white/10"
+      style={{
+        gridTemplateColumns: "repeat(32, minmax(0, 1fr))",
+        gridTemplateRows: "repeat(32, minmax(0, 1fr))",
+      }}
+      role="img"
+      aria-label="32 by 32 patch probability grid"
+    >
+      {grid.map((row, y) =>
+        row.map((v, x) => {
+          const [r, g, b] = turbo(v);
+          return (
+            <div
+              key={`${y}-${x}`}
+              style={{ backgroundColor: `rgb(${r},${g},${b})` }}
+            />
+          );
+        }),
+      )}
+    </div>
+  );
+}
 
 function Badge({
   children,
@@ -240,13 +277,13 @@ function Branch({
   children: React.ReactNode;
 }) {
   return (
-    <div className="min-w-0">
+    <div className="flex min-w-0 flex-col">
       <div className="mb-2 flex justify-center">
         <span className="max-w-full truncate rounded-full border border-white/[0.07] bg-[#0c0c0f] px-2.5 py-0.5 text-[10px] text-zinc-400">
           {label}
         </span>
       </div>
-      {children}
+      <div className="flex flex-1 flex-col">{children}</div>
     </div>
   );
 }
