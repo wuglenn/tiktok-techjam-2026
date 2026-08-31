@@ -66,22 +66,34 @@ export function HeatCanvas({
 
     ctx.clearRect(0, 0, W, H);
 
-    // base layer: the image (cover fit) or a neutral procedural placeholder
+    // Letterbox / fill: image and heatmap must share one dest rect so the
+    // 32×32 local head (computed on a square 512 resize) maps back onto the
+    // original photo instead of the card's crop box.
+    let dx = 0;
+    let dy = 0;
+    let dw = W;
+    let dh = H;
     if (img) {
       const iw = img.naturalWidth || 1;
       const ih = img.naturalHeight || 1;
-      const s = Math.max(W / iw, H / ih);
-      const dw = iw * s;
-      const dh = ih * s;
-      ctx.drawImage(img, (W - dw) / 2, (H - dh) / 2, dw, dh);
-    } else {
-      const g = ctx.createLinearGradient(0, 0, W, H);
-      g.addColorStop(0, "#141417");
-      g.addColorStop(0.5, "#101013");
-      g.addColorStop(1, "#17151c");
-      ctx.fillStyle = g;
+      const s = Math.min(W / iw, H / ih);
+      dw = Math.max(1, iw * s);
+      dh = Math.max(1, ih * s);
+      dx = (W - dw) / 2;
+      dy = (H - dh) / 2;
+    }
+
+    if (img) {
+      ctx.fillStyle = "#fcfaf5";
       ctx.fillRect(0, 0, W, H);
-      ctx.strokeStyle = "rgba(255,255,255,0.05)";
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      ctx.drawImage(img, dx, dy, dw, dh);
+    } else {
+      ctx.fillStyle = "#fff8e8";
+      ctx.fillRect(0, 0, W, H);
+      ctx.strokeStyle = "#a3a3a3";
+      ctx.globalAlpha = 0.35;
       ctx.lineWidth = 1;
       const step = Math.max(24, W / 12);
       for (let x = step; x < W; x += step) {
@@ -96,11 +108,13 @@ export function HeatCanvas({
         ctx.lineTo(W, y);
         ctx.stroke();
       }
+      ctx.globalAlpha = 1;
     }
 
     if (!showHeat || !grid || !grid.length) return;
 
-    // heatmap layer: G x G ImageData colored through turbo, scaled up smoothly
+    // heatmap layer: G x G ImageData colored through turbo, bilinear-scaled
+    // to the same rectangle as the photo (inverse of eval_transform's square resize)
     const Gh = grid.length;
     const Gw = grid[0].length;
     const off = document.createElement("canvas");
@@ -125,7 +139,7 @@ export function HeatCanvas({
     ctx.globalAlpha = opacity;
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(off, 0, 0, W, H);
+    ctx.drawImage(off, dx, dy, dw, dh);
     ctx.restore();
   }, [img, grid, opacity, showHeat, tick]);
 
@@ -135,12 +149,12 @@ export function HeatCanvas({
 export function HeatLegend({ className }: { className?: string }) {
   return (
     <div className={`flex items-center gap-2.5 ${className ?? ""}`}>
-      <span className="text-[10px] font-medium tracking-wide text-zinc-500">real</span>
+      <span className="font-mono text-[14px] text-ink-mute">real</span>
       <div
-        className="h-2 w-28 rounded-full ring-1 ring-white/10"
+        className="h-1 w-28"
         style={{ background: turboGradientCss() }}
       />
-      <span className="text-[10px] font-medium tracking-wide text-zinc-500">AI</span>
+      <span className="font-mono text-[14px] text-ink-mute">AI</span>
     </div>
   );
 }

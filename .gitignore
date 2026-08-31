@@ -58,3 +58,7 @@ Desktop.ini
 # --- Editors ---
 .idea/
 .vscode/
+
+
+eval/eval_step33500/errors_gallery/*
+eval/eval_step33500/errors_raw/*

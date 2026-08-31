@@ -32,7 +32,8 @@ export function repoRoot(): string | null {
 }
 
 /**
- * Best checkpoint to serve: $SEER_CHECKPOINT, else the newest
+ * Best checkpoint to serve: $SEER_CHECKPOINT, else repo-root `best.pt`
+ * (the hero weights `predict.py` defaults to), else the newest
  * `runs/<name>/best.pt` (preferring the hero `seer_vitl*` runs).
  */
 export function findCheckpoint(root: string): string | null {
@@ -41,6 +42,8 @@ export function findCheckpoint(root: string): string | null {
     const p = path.isAbsolute(env) ? env : path.join(root, env);
     if (fs.existsSync(p)) return p;
   }
+  const rootCkpt = path.join(root, "best.pt");
+  if (fs.existsSync(rootCkpt)) return rootCkpt;
   const runsDir = path.join(root, "runs");
   let entries: fs.Dirent[];
   try {
@@ -210,9 +213,113 @@ export function imageDims(buf: Buffer): { width: number; height: number } | unde
   return undefined;
 }
 
+export function inferServerUrl(): string {
+  const raw = process.env.SEER_INFER_URL?.trim();
+  return (raw || "http://127.0.0.1:8765").replace(/\/$/, "");
+}
+
+export interface InferServerHealth {
+  ok: boolean;
+  ready?: boolean;
+  checkpoint?: string;
+  device?: string;
+  backbone?: string;
+  step?: number;
+  res?: number;
+  error?: string;
+}
+
+/** Probe the persistent `seer_serve.py` process. null = nothing listening. */
+export async function probeInferServer(
+  url = inferServerUrl(),
+  timeoutMs = 800,
+): Promise<InferServerHealth | null> {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const res = await fetch(`${url}/health`, { signal: ctrl.signal, cache: "no-store" });
+    clearTimeout(timer);
+    const body = (await res.json()) as Record<string, unknown>;
+    return {
+      ok: Boolean(body.ok),
+      ready: Boolean(body.ready),
+      checkpoint: typeof body.checkpoint === "string" ? body.checkpoint : undefined,
+      device: typeof body.device === "string" ? body.device : undefined,
+      backbone: typeof body.backbone === "string" ? body.backbone : undefined,
+      step: typeof body.step === "number" ? body.step : undefined,
+      res: typeof body.res === "number" ? body.res : undefined,
+      error: typeof body.error === "string" ? body.error : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+type BridgeRecord = {
+  image: string;
+  prob_ai: number;
+  label: string;
+  grid: number[][] | null;
+  width?: number;
+  height?: number;
+};
+
+function recordsToResults(records: BridgeRecord[], files: UploadFile[]): AnalyzeResult[] {
+  return records.map((r, i) => {
+    const dims = files[i] ? imageDims(files[i].buf) : undefined;
+    return {
+      name: files[i]?.name ?? path.basename(r.image),
+      prob_ai: r.prob_ai,
+      label: r.label === "AI" ? ("AI" as const) : ("REAL" as const),
+      grid: r.grid,
+      // prefer the uploaded file's intrinsic size — the model resizes to a
+      // square 512 for the forward pass, but the overlay must match the photo
+      width: dims?.width ?? r.width,
+      height: dims?.height ?? r.height,
+      bytes: files[i]?.buf.length,
+      type: files[i]?.type,
+    };
+  });
+}
+
+async function runViaServer(
+  url: string,
+  files: UploadFile[],
+  saved: string[],
+  timeoutMs: number,
+): Promise<AnalyzeResult[]> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${url}/analyze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ images: saved }),
+      signal: ctrl.signal,
+      cache: "no-store",
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      let detail = text.slice(0, 400);
+      try {
+        const parsed = JSON.parse(text) as { error?: string };
+        if (parsed.error) detail = parsed.error;
+      } catch {
+        /* keep raw text */
+      }
+      throw new Error(`infer server ${res.status}: ${detail}`);
+    }
+    const records = JSON.parse(text) as BridgeRecord[];
+    if (!Array.isArray(records)) throw new Error("infer server returned no array");
+    return recordsToResults(records, files);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
- * Live inference: save uploads to a scratch dir, run the Python bridge,
- * return one record per image. Throws with a readable message on failure.
+ * Live inference: save uploads to a scratch dir, score them on the
+ * persistent server when it is up, otherwise spawn `seer_infer.py`.
  */
 export async function runBridge(
   root: string,
@@ -233,6 +340,15 @@ export async function runBridge(
       saved.push(p);
     });
 
+    const url = inferServerUrl();
+    const health = await probeInferServer(url);
+    if (health?.ok) {
+      return await runViaServer(url, files, saved, timeoutMs);
+    }
+    if (health && !health.ok) {
+      throw new Error(health.error || "inference server is still loading the model");
+    }
+
     let lastErr: unknown = null;
     for (const cand of pythonCandidates(root)) {
       try {
@@ -248,24 +364,8 @@ export async function runBridge(
           }),
         );
         if (!Number.isFinite(start)) throw new Error("bridge printed no JSON");
-        const records = JSON.parse(stdout.slice(start)) as Array<{
-          image: string;
-          prob_ai: number;
-          label: string;
-          grid: number[][] | null;
-          width?: number;
-          height?: number;
-        }>;
-        return records.map((r, i) => ({
-          name: files[i]?.name ?? path.basename(r.image),
-          prob_ai: r.prob_ai,
-          label: r.label === "AI" ? ("AI" as const) : ("REAL" as const),
-          grid: r.grid,
-          width: r.width,
-          height: r.height,
-          bytes: files[i]?.buf.length,
-          type: files[i]?.type,
-        }));
+        const records = JSON.parse(stdout.slice(start)) as BridgeRecord[];
+        return recordsToResults(records, files);
       } catch (err) {
         lastErr = err;
         // retry the next interpreter only when this one was missing at all
@@ -304,6 +404,33 @@ export function simulateFile(f: UploadFile): AnalyzeResult {
   };
 }
 
+/** Python eval dumps write `NaN`; JSON.parse rejects that. */
+export function parseEvalJson(text: string): unknown {
+  return JSON.parse(text.replace(/\bNaN\b/g, "null"));
+}
+
+function resolveErrorFile(root: string, file: string): string | null {
+  const rel = file.replace(/^[/\\]+/, "");
+  const candidates = [
+    path.isAbsolute(file) ? file : path.join(root, rel),
+    path.join(root, rel.replace(/^runs[/\\]seer_vitl[/\\]eval_step33500/, path.join("eval", "eval_step33500"))),
+    path.join(root, "eval", "eval_step33500", "errors_dalle_advanced", path.basename(file)),
+    path.join(root, "eval", "eval_step33500", "errors_gallery", path.basename(file)),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return null;
+}
+
+function suiteName(r: Record<string, unknown>, file: string): string {
+  if (typeof r.suite_name === "string" && r.suite_name) return r.suite_name;
+  const base = path.basename(file, ".json");
+  if (base && base !== "folders" && base !== "summary") return base;
+  if (typeof r.dataset === "string" && r.dataset !== "folders") return r.dataset;
+  return base;
+}
+
 /** Normalize one raw eval JSON (seer/eval.py --out-json) for the client. */
 export function normalizeEvalJson(
   raw: unknown,
@@ -317,23 +444,36 @@ export function normalizeEvalJson(
     r.perturbation_sweep && typeof r.perturbation_sweep === "object"
       ? (r.perturbation_sweep as Record<string, MetricsRow>)
       : undefined;
-  if (typeof metrics !== "number" && !sweep) return null;
+  const hasBody =
+    typeof metrics === "number" ||
+    typeof r.n === "number" ||
+    !!sweep ||
+    !!objOrUndef(r.per_architecture) ||
+    !!objOrUndef(r.per_distorted) ||
+    Array.isArray(r.error_analysis);
+  if (!hasBody) return null;
 
   let errors: ErrorEntry[] | undefined;
   if (Array.isArray(r.error_analysis)) {
     errors = (r.error_analysis as Array<Record<string, unknown>>)
       .map((e) => {
-        const abs = typeof e.file === "string" ? e.file : null;
-        const available = !!abs && fs.existsSync(abs);
+        const listed = typeof e.file === "string" ? e.file : null;
+        const abs = listed ? resolveErrorFile(root, listed) : null;
+        const generator =
+          typeof e.generator === "string" && /^[0-9a-f]{20,}$/i.test(e.generator)
+            ? "DALL·E 3 Advanced"
+            : typeof e.generator === "string"
+              ? e.generator
+              : undefined;
         return {
           kind: e.kind === "fp" ? ("fp" as const) : ("fn" as const),
           rank: Number(e.rank ?? 0),
-          file: available && abs ? toPosix(path.relative(root, abs)) : undefined,
-          imageAvailable: available,
+          file: abs ? toPosix(path.relative(root, abs)) : undefined,
+          imageAvailable: !!abs,
           prob_ai: Number(e.prob_ai ?? 0),
           label: (e.label === 1 ? 1 : 0) as 0 | 1,
           explained: Boolean(e.explained),
-          generator: typeof e.generator === "string" ? e.generator : undefined,
+          generator,
           distortions: Array.isArray(e.distortions) ? (e.distortions as string[]) : [],
         };
       })
@@ -341,14 +481,13 @@ export function normalizeEvalJson(
     if (!errors.length) errors = undefined;
   }
 
-  const base = (sweep?.clean ?? (typeof metrics === "number" ? r : undefined)) as
-    | MetricsRow
-    | undefined;
+  const base = (sweep?.clean ?? (hasBody ? r : undefined)) as MetricsRow | undefined;
   return {
     id: file,
-    name: typeof r.dataset === "string" ? r.dataset : path.basename(file, ".json"),
+    name: suiteName(r, file),
     file: toPosix(path.relative(root, file)),
     checkpoint: typeof r.checkpoint === "string" ? r.checkpoint : undefined,
+    step: numOrUndef(r.step),
     perturbation: typeof r.perturbation === "string" ? r.perturbation : "clean",
     metrics: (base ?? ({} as MetricsRow)) as MetricsRow,
     sweep,
@@ -368,18 +507,22 @@ function objOrUndef(v: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 function numOrUndef(v: unknown): number | undefined {
-  return typeof v === "number" ? v : undefined;
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }
 function toPosix(p: string): string {
   return p.split(path.sep).join("/");
 }
 
-/** Scan runs/eval/*.json and runs/*.json for eval metrics (newest first). */
+/** Scan eval/eval_step33500, then runs/eval and runs, newest first. */
 export function scanEvalRuns(root: string, limit = 30): EvalDataset[] {
   const out: EvalDataset[] = [];
   const seen = new Set<string>();
-  for (const sub of ["runs", path.join("runs", "eval")]) {
-    const dir = path.join(root, sub);
+  const dirs = [
+    path.join(root, "eval", "eval_step33500"),
+    path.join(root, "runs", "eval"),
+    path.join(root, "runs"),
+  ];
+  for (const dir of dirs) {
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -387,7 +530,7 @@ export function scanEvalRuns(root: string, limit = 30): EvalDataset[] {
       continue;
     }
     const jsons = entries
-      .filter((e) => e.isFile() && e.name.endsWith(".json"))
+      .filter((e) => e.isFile() && e.name.endsWith(".json") && e.name !== "summary.json")
       .map((e) => {
         const p = path.join(dir, e.name);
         return { p, mtime: fs.statSync(p).mtimeMs };
@@ -399,7 +542,7 @@ export function scanEvalRuns(root: string, limit = 30): EvalDataset[] {
       try {
         const st = fs.statSync(p);
         if (st.size > 20 * 1024 * 1024) continue;
-        const parsed = JSON.parse(fs.readFileSync(p, "utf-8"));
+        const parsed = parseEvalJson(fs.readFileSync(p, "utf-8"));
         const ds = normalizeEvalJson(parsed, p, root);
         if (ds) out.push(ds);
       } catch {
@@ -410,12 +553,12 @@ export function scanEvalRuns(root: string, limit = 30): EvalDataset[] {
   return out;
 }
 
-/** Validate an /api/eval-image src param: must resolve inside <root>/runs. */
+/** Validate an /api/eval-image src param: must resolve inside <root>/runs or <root>/eval. */
 export function safeEvalImagePath(root: string, rel: string): string | null {
   const abs = path.resolve(root, rel);
-  const runsRoot = path.resolve(root, "runs");
   const norm = path.normalize(abs);
-  if (!norm.startsWith(runsRoot + path.sep)) return null;
+  const allowed = [path.resolve(root, "runs"), path.resolve(root, "eval")];
+  if (!allowed.some((base) => norm.startsWith(base + path.sep))) return null;
   if (!/\.(png|jpe?g|webp)$/i.test(norm)) return null;
   return fs.existsSync(norm) ? norm : null;
 }

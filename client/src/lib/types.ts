@@ -46,6 +46,7 @@ export interface EvalDataset {
   /** file the metrics came from (live mode) */
   file?: string;
   checkpoint?: string;
+  step?: number;
   perturbation?: string;
   metrics: MetricsRow;
   sweep?: Record<string, MetricsRow>;
@@ -92,5 +93,8 @@ export interface StatusResponse {
   checkpoint: string | null;
   root: string | null;
   uv: string | null;
+  /** persistent seer_serve.py URL when it answered /health */
+  server?: string | null;
+  device?: string | null;
   error?: string | null;
 }

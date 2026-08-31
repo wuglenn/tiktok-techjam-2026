@@ -327,5 +327,67 @@
   "checkpoint": "/workspace/tiktok-techjam-2026/runs/seer_vitl/last.pt",
   "step": 33500,
   "suite_name": "openfake_test",
-  "seconds": 452.5
+  "seconds": 452.5,
+  "error_analysis": [
+    {
+      "kind": "fp",
+      "rank": 1,
+      "file": "eval/eval_step33500/errors_gallery/fp_01_p0.986_docci.png",
+      "prob_ai": 0.986363,
+      "label": 0,
+      "explained": true,
+      "generator": "DOCCI (real photograph)",
+      "distortions": []
+    },
+    {
+      "kind": "fp",
+      "rank": 2,
+      "file": "eval/eval_step33500/errors_gallery/fp_02_p0.728_imagenet.png",
+      "prob_ai": 0.727975,
+      "label": 0,
+      "explained": true,
+      "generator": "ImageNet (real photograph)",
+      "distortions": []
+    },
+    {
+      "kind": "fp",
+      "rank": 3,
+      "file": "eval/eval_step33500/errors_gallery/fp_03_p0.647_docci.png",
+      "prob_ai": 0.646906,
+      "label": 0,
+      "explained": true,
+      "generator": "DOCCI (real photograph)",
+      "distortions": []
+    },
+    {
+      "kind": "fn",
+      "rank": 1,
+      "file": "eval/eval_step33500/errors_dalle_advanced/fn_01_p0.032_1d4135eb385210a437a2c66e5a1487c1.png",
+      "prob_ai": 0.03173828125,
+      "label": 1,
+      "explained": true,
+      "generator": "DALL\u00b7E 3 Advanced",
+      "distortions": []
+    },
+    {
+      "kind": "fn",
+      "rank": 2,
+      "file": "eval/eval_step33500/errors_gallery/fn_02_p0.004_midjourney-7.png",
+      "prob_ai": 0.004199,
+      "label": 1,
+      "explained": true,
+      "generator": "Midjourney 7",
+      "distortions": []
+    },
+    {
+      "kind": "fn",
+      "rank": 3,
+      "file": "eval/eval_step33500/errors_gallery/fn_03_p0.318_ideogram-2.0.png",
+      "prob_ai": 0.318273,
+      "label": 1,
+      "explained": true,
+      "generator": "Ideogram 2.0",
+      "distortions": []
+    }
+  ]
 }

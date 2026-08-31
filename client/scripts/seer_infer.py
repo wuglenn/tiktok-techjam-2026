@@ -13,11 +13,94 @@ page-only checkpoints (frozen probes).
 
   uv run python client/scripts/seer_infer.py \
       --checkpoint runs/seer_vitl/best.pt --image a.jpg b.jpg
+
+The dashboard prefers the persistent server in seer_serve.py (loads the
+checkpoint once). This CLI is the fallback that loads per request.
 """
 
+from __future__ import annotations
+
 import argparse
+import gc
 import json
 import sys
+from pathlib import Path
+from typing import Any, List, Optional, Sequence
+
+_SRC = Path(__file__).resolve().parents[2] / "src"
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
+
+
+def load_runtime(checkpoint: str, device: Optional[str] = None, res: Optional[int] = None):
+    """Load weights on CPU, drop EMA/optimizer tensors, then move the model.
+
+    A TechJam `best.pt` is ~4.9 GB (model + EMA + optimizer). Mapping that
+    whole blob onto the GPU with `map_location=cuda` will OOM a 10 GB card.
+    """
+    import torch
+
+    from seer.model import load_checkpoint
+
+    model, cfg_dict, ckpt = load_checkpoint(checkpoint, device="cpu")
+    meta = {
+        "backbone": ckpt.get("backbone_name"),
+        "step": ckpt.get("step"),
+        "param_count": ckpt.get("param_count") or sum(p.numel() for p in model.parameters()),
+        "res": int(res or cfg_dict.get("res", 512)),
+    }
+    for key in ("model", "ema", "optimizer", "scheduler"):
+        ckpt[key] = None
+    del ckpt
+    gc.collect()
+
+    dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    model.to(dev).eval()
+    return model, dev, meta
+
+
+def score_one(model, path: str, res: int, device) -> dict[str, Any]:
+    import numpy as np
+    import torch
+    from PIL import Image
+
+    from seer.augment import eval_transform
+
+    img = Image.open(path).convert("RGB")
+    orig_w, orig_h = img.size
+    w, h = orig_w, orig_h
+    # the commercial model refuses <512px inputs; upscale instead so
+    # every image gets a verdict (mirrors seer/infer.py)
+    if min(w, h) < res:
+        s = res / min(w, h)
+        img = img.resize((round(w * s), round(h * s)), Image.BICUBIC)
+        w, h = img.size
+
+    x = eval_transform(img, res)[None].to(device)
+    with torch.no_grad():
+        with torch.autocast(device.type, dtype=torch.bfloat16, enabled=(device.type == "cuda")):
+            out = model(x)
+
+    prob = torch.sigmoid(out["logits"][0].float()).item()
+    grid = None
+    patch = out.get("patch_logits")
+    if patch is not None:
+        probs = torch.sigmoid(patch[0].float()).cpu().numpy()
+        g = int(round(float(np.sqrt(probs.size))))
+        grid = [[round(float(v), 4) for v in row] for row in probs.reshape(g, g)]
+
+    return {
+        "image": path,
+        "prob_ai": round(float(prob), 6),
+        "label": "AI" if prob >= 0.5 else "REAL",
+        "grid": grid,
+        "width": orig_w,
+        "height": orig_h,
+    }
+
+
+def score_images(model, paths: Sequence[str], res: int, device) -> List[dict[str, Any]]:
+    return [score_one(model, path, res, device) for path in paths]
 
 
 def main(argv=None):
@@ -28,53 +111,8 @@ def main(argv=None):
     p.add_argument("--device", default=None)
     args = p.parse_args(argv)
 
-    import numpy as np  # noqa: F401  (torch dep, keeps the heavy import local)
-    import torch
-    from PIL import Image
-
-    from seer.augment import eval_transform
-    from seer.model import load_checkpoint
-
-    device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    model, cfg_dict, _ = load_checkpoint(args.checkpoint, device=device)
-    res = args.res or int(cfg_dict.get("res", 512))
-    model.eval()
-
-    records = []
-    with torch.no_grad():
-        for path in args.image:
-            img = Image.open(path).convert("RGB")
-            w, h = img.size
-            # the commercial model refuses <512px inputs; upscale instead so
-            # every image gets a verdict (mirrors seer/infer.py)
-            if min(w, h) < res:
-                s = res / min(w, h)
-                img = img.resize((round(w * s), round(h * s)), Image.BICUBIC)
-                w, h = img.size
-
-            x = eval_transform(img, res)[None].to(device)
-            with torch.autocast(device.type, dtype=torch.bfloat16, enabled=(device.type == "cuda")):
-                out = model(x)
-
-            prob = torch.sigmoid(out["logits"][0].float()).item()
-            grid = None
-            patch = out.get("patch_logits")
-            if patch is not None:
-                probs = torch.sigmoid(patch[0].float()).cpu().numpy()
-                g = int(round(float(np.sqrt(probs.size))))
-                grid = [[round(float(v), 4) for v in row] for row in probs.reshape(g, g)]
-
-            records.append(
-                {
-                    "image": path,
-                    "prob_ai": round(prob, 6),
-                    "label": "AI" if prob >= 0.5 else "REAL",
-                    "grid": grid,
-                    "width": w,
-                    "height": h,
-                }
-            )
-
+    model, device, meta = load_runtime(args.checkpoint, args.device, args.res)
+    records = score_images(model, args.image, meta["res"], device)
     json.dump(records, sys.stdout)
 
 

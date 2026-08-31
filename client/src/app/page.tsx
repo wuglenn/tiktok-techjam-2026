@@ -1,171 +1,125 @@
 import Link from "next/link";
 
-import { StatCard } from "@/components/charts";
-import { HeroDemo } from "@/components/hero-demo";
 import { EvalResults } from "@/components/eval-results";
+import { Figure, Measure, MetaPairs } from "@/components/essay";
 import { FlowDiagram } from "@/components/flow-diagram";
+import { HeroDemo } from "@/components/hero-demo";
 import { MixtureTable } from "@/components/mixture";
 import { StackTabs } from "@/components/stack";
-import {
-  IconArrowRight,
-  IconChart,
-  IconFlame,
-  IconScan,
-  IconZap,
-} from "@/components/icons";
 
 export default function OverviewPage() {
   return (
-    <div className="space-y-24">
-      {/* ---------------------------------------------------------- hero */}
-      <section className="relative">
-        <div className="pointer-events-none absolute -top-24 left-1/2 -z-10 h-72 w-[42rem] -translate-x-1/2 rounded-full bg-cyan-500/[0.07] blur-3xl" />
-        <div className="grid items-center gap-12 lg:grid-cols-[1.05fr_0.95fr]">
-          <div className="animate-rise">
-            <div className="inline-flex items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.03] px-3 py-1 text-[11px] font-medium tracking-wide text-zinc-400">
-              <IconFlame className="h-3.5 w-3.5 text-cyan-400" />
-              TikTok TechJam 2026 · Track 5
-            </div>
-            <h1 className="mt-6 text-5xl font-semibold leading-[1.05] tracking-tight text-white sm:text-6xl">
-              AI images leave
-              <br />
-              fingerprints.
-              <span className="text-gradient"> Seer reads them.</span>
-            </h1>
-            <p className="mt-6 max-w-xl text-base leading-relaxed text-zinc-400">
-              A 302M-parameter detector — DINOv3 ViT-L fully fine-tuned with dual
-              global + patch heads — trained on public data with
-              wild-simulation augmentation and composite training. One forward
-              pass gives an image-level verdict{" "}
-              <em className="not-italic text-zinc-200">and</em> a pixel-level
-              heatmap.
-            </p>
-            <div className="mt-8 flex flex-wrap items-center gap-3">
-              <Link
-                href="/analyze"
-                className="group inline-flex items-center gap-2 rounded-xl bg-linear-to-r from-cyan-400 to-sky-500 px-5 py-3 text-sm font-semibold text-zinc-950 shadow-lg shadow-cyan-500/20 transition-transform hover:scale-[1.02] active:scale-[0.99]"
-              >
-                <IconScan className="h-4 w-4" />
-                Analyze an image
-                <IconArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
-              </Link>
-              <Link
-                href="/robustness"
-                className="inline-flex items-center gap-2 rounded-xl border border-white/[0.1] bg-white/[0.03] px-5 py-3 text-sm font-medium text-zinc-200 transition-colors hover:bg-white/[0.06]"
-              >
-                <IconChart className="h-4 w-4" />
-                Robustness results
-              </Link>
-            </div>
-          </div>
-          <HeroDemo />
-        </div>
-      </section>
+    <article>
+      <Measure className="essay">
+        <h1 className="essay-title">
+          Training a detector to read AI image fingerprints
+        </h1>
+        <p className="essay-kicker mt-3">
+          TikTok TechJam 2026 · Track 5 · DINOv3 ViT-L
+        </p>
+        <p className="mt-6">
+          The budget is two billion parameters. We used 302 million: DINOv3 ViT-L,
+          fully fine-tuned, with a global head for the page-level verdict and a
+          local head for a 32×32 patch map. One forward pass returns both.
+        </p>
+        <p>
+          Training is public data only, 2.58 million usable images, weighted by
+          how hard each source is, then run through wild-simulation augmentation
+          so JPEG and resize do not wipe the fingerprint. The rest of this page
+          is the architecture, the held-out numbers, the mixture, and the tools.
+          {" "}
+          <Link href="/analyze">Analyze</Link> runs the checkpoint on an image
+          you bring.
+        </p>
+      </Measure>
 
-      {/* --------------------------------------------------------- stats */}
-      <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard
-          label="Backbone"
-          value="DINOv3 ViT-L/16"
-          sub="full continuation fine-tuning"
-          accent="cyan"
-        />
-        <StatCard
-          label="Parameters"
-          value="302M"
-          sub="15% of the 2B budget"
-          accent="sky"
-        />
-        <StatCard
-          label="Input"
-          value="512 × 512"
-          sub="32 × 32 patch grid, small images upscaled"
-          accent="emerald"
-        />
-        <StatCard
-          label="Output"
-          value="Verdict + heatmap"
-          sub="global head + per-patch local head"
-          accent="rose"
-        />
-      </section>
+      <div className="mt-6">
+        <HeroDemo />
+      </div>
 
-      {/* ----------------------------------------------------- pipeline */}
-      <section>
-        <SectionHeading
-          eyebrow="Architecture"
-          title="How a verdict is made"
-          sub="One shared backbone, two heads — the global head answers “is this AI?”, the local head answers “where?”."
+      <Measure className="mt-10">
+        <MetaPairs
+          rows={[
+            {
+              label: "Backbone",
+              value: "DINOv3 ViT-L/16",
+              detail: "full continuation fine-tuning",
+            },
+            {
+              label: "Parameters",
+              value: "302M",
+              detail: "15% of the 2B budget",
+            },
+            {
+              label: "Input",
+              value: "512 × 512",
+              detail: "32 × 32 patch grid",
+            },
+            {
+              label: "Output",
+              value: "Verdict + heatmap",
+              detail: "global head + per-patch local head",
+            },
+          ]}
         />
-        <FlowDiagram />
-      </section>
+      </Measure>
 
-      {/* --------------------------------------------------- evaluation */}
-      <section>
-        <SectionHeading
-          eyebrow="Evaluation"
-          title="Seer on held-out data"
-        />
+      <Measure className="essay mt-10">
+        <h2 className="essay-title">How a verdict is made</h2>
+        <p className="mt-4">
+          Seer is one network, not a classifier plus a separate localizer. A
+          DINOv3 ViT-L/16 is fine-tuned end to end so the features themselves
+          learn generator traces.
+        </p>
+        <p>
+          We put a heatmap on every result so the verdict is not a black box:
+          it shows which patches the model treats as generated.
+        </p>
+      </Measure>
+      <div className="mt-6">
+        <Figure
+          wash
+          caption="Input image, DINOv3 ViT-L/16, then a fork into the global head and the 32×32 local head."
+        >
+          <FlowDiagram />
+        </Figure>
+      </div>
+
+      <Measure className="essay mt-10">
+        <h2 className="essay-title">Held-out numbers</h2>
+        <p className="mt-4">
+          These are Seer&apos;s own held-out scores from various community
+          datasets. The NTIRE 2026 open-test leaderboard sits under the table
+          so the public-test AUROC can be read next to the published entries.
+        </p>
+      </Measure>
+      <div className="mt-6">
         <EvalResults />
-      </section>
+      </div>
 
-      {/* ------------------------------------------------ data mixture */}
-      <section>
-        <SectionHeading
-          eyebrow="Training data"
-          title="The mixture makes or breaks this task"
-          sub="Ten public sources weighted by measured difficulty — 2.58M usable images, 1.70M fake and 875K real. Select a source for its contents and how to fetch it."
-        />
+      <Measure className="essay mt-10">
+        <h2 className="essay-title">The mixture</h2>
+        <p className="mt-4">
+          Ten public sources, weighted by measured difficulty. 2.58 million
+          usable images: 1.70 million fake and 875 thousand real. I open a
+          source for what is in it and how to fetch it. Weights decide draw
+          probability, not disk usage.
+        </p>
+      </Measure>
+      <div className="mt-6">
         <MixtureTable />
-      </section>
+      </div>
 
-      {/* ---------------------------------------------------------- stack */}
-      <section>
-        <SectionHeading
-          eyebrow="Built with"
-          title="Tools, models, libraries, and data"
-          sub="The full inventory behind every number above — what the work was done in, what the model is made of, what it depends on, and what it was trained and tested on."
-        />
+      <Measure className="essay mt-10">
+        <h2 className="essay-title">What I trained with</h2>
+        <p className="mt-4">
+          The tools, models, libraries, and data that produced the numbers
+          above. Only the parts that shaped the result.
+        </p>
+      </Measure>
+      <div className="mt-6">
         <StackTabs />
-      </section>
-
-      {/* ------------------------------------------------------ footer */}
-      <footer className="border-t border-white/[0.06] pt-8 text-xs text-zinc-600">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <span>
-            Seer · TikTok TechJam 2026 Track 5 · sub-2B AI-generated image
-            detector
-          </span>
-          <span className="flex items-center gap-1.5">
-            <IconZap className="h-3.5 w-3.5" />
-            DINOv3 ViT-L · dual head · public data only
-          </span>
-        </div>
-      </footer>
-    </div>
-  );
-}
-
-/* ---------------------------------------------------------------- pieces */
-
-function SectionHeading({
-  eyebrow,
-  title,
-  sub,
-}: {
-  eyebrow: string;
-  title: string;
-  sub?: string;
-}) {
-  return (
-    <div className="max-w-2xl">
-      <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-cyan-400/80">
-        {eyebrow}
-      </p>
-      <h2 className="mt-2 text-2xl font-semibold tracking-tight text-white sm:text-3xl">
-        {title}
-      </h2>
-      {sub && <p className="mt-3 text-sm leading-relaxed text-zinc-400">{sub}</p>}
-    </div>
+      </div>
+    </article>
   );
 }

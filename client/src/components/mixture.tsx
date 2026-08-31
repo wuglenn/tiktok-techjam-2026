@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-import { IconChevron, IconExternal } from "@/components/icons";
+import { Chip } from "@/components/essay";
 
 /**
  * The hero training mixture. Counts are the on-disk inventory from
@@ -149,44 +149,27 @@ const SOURCES: MixtureSource[] = [
 export function MixtureTable() {
   const [open, setOpen] = useState<string | null>(null);
   return (
-    <div className="panel mt-8 divide-y divide-white/[0.05]">
+    <div className="figure">
       {SOURCES.map((m) => {
         const isOpen = open === m.key;
         return (
-          <div key={m.key}>
+          <div key={m.key} className="border-b border-dashed border-rule">
             <button
+              type="button"
               onClick={() => setOpen(isOpen ? null : m.key)}
               aria-expanded={isOpen}
-              className="grid w-full items-center gap-3 px-5 py-3 text-left transition-colors hover:bg-white/[0.02] sm:grid-cols-[1fr_160px_auto]"
+              className="grid w-full items-center gap-3 py-3 text-left sm:grid-cols-[1fr_140px_auto]"
             >
-              <span className="flex min-w-0 items-center gap-3">
-                <IconChevron
-                  className={`h-3.5 w-3.5 shrink-0 text-zinc-500 transition-transform duration-200 ${
-                    isOpen ? "rotate-180" : ""
-                  }`}
-                />
-                <span className="truncate text-sm font-medium text-zinc-100">
+              <span className="flex min-w-0 flex-wrap items-center gap-2">
+                <span className="text-[16px] font-medium text-ink-head">
                   {m.name}
                 </span>
-                <span
-                  className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
-                    m.cls === "real"
-                      ? "bg-emerald-500/10 text-emerald-300"
-                      : m.cls === "fake"
-                        ? "bg-rose-500/10 text-rose-300"
-                        : "bg-cyan-500/10 text-cyan-300"
-                  }`}
-                >
-                  {m.cls}
-                </span>
+                <Chip>{m.cls}</Chip>
               </span>
-              <span className="h-1.5 overflow-hidden rounded-full bg-white/[0.05]">
-                <span
-                  className="block h-full rounded-full bg-cyan-400/50"
-                  style={{ width: `${(m.weight / 0.224) * 100}%` }}
-                />
+              <span className="metric-bar">
+                <span style={{ width: `${(m.weight / 0.224) * 100}%` }} />
               </span>
-              <span className="tabular justify-self-end text-xs font-medium text-zinc-300">
+              <span className="tabular justify-self-end font-mono text-[14px] text-ink-mute">
                 {m.weight.toFixed(3)}
               </span>
             </button>
@@ -194,14 +177,10 @@ export function MixtureTable() {
           </div>
         );
       })}
-      <div className="flex flex-wrap items-center justify-between gap-2 bg-white/[0.02] px-5 py-3 text-xs text-zinc-500">
-        <span>
-          usable by the mix:{" "}
-          <span className="tabular font-semibold text-zinc-200">2,576,437</span>{" "}
-          images — 1,701,288 fake · 875,149 real
-        </span>
-        <span>weights sum to 1</span>
-      </div>
+      <p className="caption py-3">
+        usable by the mix: 2,576,437 images — 1,701,288 fake · 875,149 real.
+        weights sum to 1.
+      </p>
     </div>
   );
 }
@@ -209,59 +188,45 @@ export function MixtureTable() {
 function SourceDetail({ m }: { m: MixtureSource }) {
   const fmt = (n: number) => n.toLocaleString("en-US");
   return (
-    <div className="animate-rise space-y-4 px-5 pb-5 pt-1 sm:pl-10">
-      <div className="flex flex-wrap gap-x-10 gap-y-3">
-        <Stat label="total" value={fmt(m.total)} />
-        {m.fake != null && <Stat label="fake" value={fmt(m.fake)} tone="rose" />}
-        {m.real != null && <Stat label="real" value={fmt(m.real)} tone="emerald" />}
-        {m.generators && <Stat label="generators" value={m.generators} />}
-      </div>
-      <p className="max-w-2xl text-xs leading-relaxed text-zinc-400">{m.note}</p>
-      <div className="flex flex-wrap items-center gap-3">
-        <code className="rounded-lg border border-white/[0.06] bg-black/40 px-2.5 py-1 text-[11px] text-zinc-300">
-          {m.fetch}
-        </code>
-        {m.href && (
+    <div className="space-y-3 pb-4">
+      <dl className="meta-grid">
+        <div className="meta-pair">
+          <dt>total</dt>
+          <dd className="tabular">{fmt(m.total)}</dd>
+        </div>
+        {m.fake != null && (
+          <div className="meta-pair">
+            <dt>fake</dt>
+            <dd className="tabular">{fmt(m.fake)}</dd>
+          </div>
+        )}
+        {m.real != null && (
+          <div className="meta-pair">
+            <dt>real</dt>
+            <dd className="tabular">{fmt(m.real)}</dd>
+          </div>
+        )}
+        {m.generators && (
+          <div className="meta-pair">
+            <dt>generators</dt>
+            <dd>{m.generators}</dd>
+          </div>
+        )}
+      </dl>
+      <p className="max-w-[600px] text-[16px] leading-[1.5] text-ink-body">{m.note}</p>
+      <p className="font-mono text-[14px] leading-[1.4] text-ink-mute">{m.fetch}</p>
+      {m.href && (
+        <p>
           <a
             href={m.href}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex items-center gap-1.5 text-[11px] font-medium text-cyan-300 transition-colors hover:text-cyan-200"
+            className="ink-link underline decoration-1 underline-offset-[0.18em]"
           >
-            <IconExternal className="h-3.5 w-3.5" />
             dataset page
           </a>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: string;
-  tone?: "rose" | "emerald";
-}) {
-  return (
-    <div>
-      <p className="text-[10px] font-medium uppercase tracking-[0.16em] text-zinc-500">
-        {label}
-      </p>
-      <p
-        className={`tabular mt-0.5 text-sm font-semibold ${
-          tone === "rose"
-            ? "text-rose-300"
-            : tone === "emerald"
-              ? "text-emerald-300"
-              : "text-white"
-        }`}
-      >
-        {value}
-      </p>
+        </p>
+      )}
     </div>
   );
 }

@@ -3,9 +3,18 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { DeltaChip, StatCard, SweepTable } from "@/components/charts";
-import { IconChart, IconShield } from "@/components/icons";
+import { Measure, Notice, Tabs } from "@/components/essay";
+import { NtireLeaderboard } from "@/components/ntire-leaderboard";
+import { evalDisplayName } from "@/lib/eval-labels";
 import { pct, perturbationLabel } from "@/lib/format";
 import type { EvalDataset, EvalResponse, MetricsRow } from "@/lib/types";
+
+function isRobust(d: EvalDataset): boolean {
+  if (d.sweep && Object.keys(d.sweep).length > 1) return true;
+  if (d.per_distorted && Object.keys(d.per_distorted).length > 0) return true;
+  if (d.per_distortion && Object.keys(d.per_distortion).length > 0) return true;
+  return false;
+}
 
 export default function RobustnessPage() {
   const [data, setData] = useState<EvalResponse | null>(null);
@@ -19,15 +28,20 @@ export default function RobustnessPage() {
       .catch((e) => setError(String(e)));
   }, []);
 
-  const datasets = (data?.datasets ?? []).filter(
-    (d) => d.sweep && Object.keys(d.sweep).length > 1,
-  );
+  const datasets = (data?.datasets ?? []).filter(isRobust);
   const ds: EvalDataset | undefined = datasets[Math.min(active, Math.max(0, datasets.length - 1))];
 
   const stats = useMemo(() => {
-    if (!ds?.sweep) return null;
-    const clean = ds.sweep["clean"]?.macro_accuracy ?? null;
-    const rows = Object.entries(ds.sweep).filter(([k]) => k !== "clean");
+    if (!ds) return null;
+    const clean =
+      ds.per_distorted?.clean?.macro_accuracy ??
+      ds.sweep?.clean?.macro_accuracy ??
+      null;
+    const rows: [string, MetricsRow][] = ds.sweep
+      ? Object.entries(ds.sweep).filter(([k]) => k !== "clean")
+      : Object.entries(ds.per_distortion ?? {}).filter(
+          ([k]) => k !== "clean" && k !== "none",
+        );
     const worst = rows.reduce<[string, MetricsRow] | null>(
       (acc, [k, m]) =>
         !acc || (m.macro_accuracy ?? 1) < (acc[1].macro_accuracy ?? 1) ? [k, m] : acc,
@@ -42,191 +56,199 @@ export default function RobustnessPage() {
   }, [ds]);
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-3xl font-semibold tracking-tight text-white">
-          Robustness
-        </h1>
-        <p className="mt-2 max-w-2xl text-sm leading-relaxed text-zinc-400">
-          Clean versus transformed performance — the benchmark perturbation
-          protocol (JPEG, blur, resize, noise, jitter, crop) plus the Pangram
-          augmented protocol, applied symmetrically to both classes.
+    <div className="space-y-10">
+      <Measure className="essay">
+        <h1 className="essay-title">Clean versus distorted performance</h1>
+        <p className="mt-4">
+          The table below is the NTIRE 2026 public-test leaderboard from
+          Table 3 of{" "}
+          <a
+            href="https://arxiv.org/pdf/2604.11487"
+            target="_blank"
+            rel="noreferrer"
+          >
+            Gushchin et al.
+          </a>
+          . The published entries are 7 billion parameter models. Our model,
+          Seer, at 302 million parameters sits third on robust ROC AUC, state
+          of the art at this scale.
         </p>
-      </div>
+      </Measure>
+
+      <NtireLeaderboard datasets={data?.datasets} />
 
       {error && (
-        <div className="rounded-xl border border-rose-400/20 bg-rose-500/[0.06] px-4 py-3 text-xs text-rose-200">
-          {error}
-        </div>
+        <Measure>
+          <Notice>{error}</Notice>
+        </Measure>
       )}
 
-      {data?.mode === "demo" && <DemoNote note={data.note} />}
+      {data?.mode === "demo" && (
+        <Measure>
+          <Notice>
+            Demo data. {data.note ?? "No real eval results found — numbers shown are placeholders."}
+          </Notice>
+        </Measure>
+      )}
 
       {!data && !error && (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <div key={i} className="panel p-5">
-              <div className="skeleton h-3 w-20" />
-              <div className="skeleton mt-3 h-7 w-24" />
-            </div>
-          ))}
-        </div>
+        <Measure>
+          <div className="meta-grid">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="meta-pair">
+                <div className="skeleton h-4 w-20" />
+                <div className="skeleton h-4 w-16 justify-self-end" />
+              </div>
+            ))}
+          </div>
+        </Measure>
       )}
 
       {datasets.length > 1 && (
-        <div className="flex flex-wrap gap-2">
-          {datasets.map((d, i) => (
-            <button
-              key={d.id}
-              onClick={() => setActive(i)}
-              className={`rounded-full px-4 py-1.5 text-xs font-medium transition-colors ${
-                i === active
-                  ? "bg-cyan-400 text-zinc-950"
-                  : "border border-white/[0.08] bg-white/[0.03] text-zinc-400 hover:text-zinc-200"
-              }`}
-            >
-              {d.name}
-            </button>
-          ))}
-        </div>
+        <Measure>
+          <Tabs
+            items={datasets.map((d) => ({ label: evalDisplayName(d.name, d.file) }))}
+            active={active}
+            onChange={setActive}
+          />
+        </Measure>
       )}
 
       {ds?.file && (
-        <p className="text-xs text-zinc-600">
-          source: <span className="tabular text-zinc-500">{ds.file}</span>
-        </p>
+        <Measure>
+          <p className="caption">source: {ds.file}</p>
+        </Measure>
       )}
 
       {stats && (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <StatCard
-            label="Clean macro acc"
-            value={stats.clean != null ? `${pct(stats.clean)}%` : "–"}
-            sub={ds ? `${ds.metrics.n?.toLocaleString() ?? "–"} images` : undefined}
-            accent="cyan"
-          />
-          <StatCard
-            label="Worst perturbation"
-            value={stats.worst ? perturbationLabel(stats.worst[0]) : "–"}
-            sub={
-              stats.worst ? (
-                <span className="flex items-center gap-1.5">
-                  {pct(stats.worst[1].macro_accuracy)}%
-                  {stats.clean != null && (
-                    <DeltaChip v={(stats.worst[1].macro_accuracy ?? 0) - stats.clean} />
-                  )}
-                </span>
-              ) : undefined
-            }
-            accent="rose"
-          />
-          <StatCard
-            label="Mean degradation"
-            value={stats.meanDelta != null ? `${(stats.meanDelta * 100).toFixed(2)} pp` : "–"}
-            sub="macro accuracy across all perturbations"
-            accent="amber"
-          />
-          <StatCard
-            label="Worst FPR"
-            value={`${pct(stats.worstFpr)}%`}
-            sub="real images called AI, worst pass"
-            accent="sky"
-          />
-        </div>
+        <Measure>
+          <div className="meta-grid">
+            <StatCard
+              label="Clean macro accuracy"
+              value={stats.clean != null ? `${pct(stats.clean)}%` : "–"}
+              sub={
+                ds?.per_distorted?.clean?.n != null
+                  ? `${ds.per_distorted.clean.n.toLocaleString()} clean images`
+                  : ds
+                    ? `${ds.metrics.n?.toLocaleString() ?? "–"} images`
+                    : undefined
+              }
+            />
+            <StatCard
+              label="Worst distortion"
+              value={stats.worst ? perturbationLabel(stats.worst[0]) : "–"}
+              sub={
+                stats.worst ? (
+                  <span>
+                    {pct(stats.worst[1].macro_accuracy)}%
+                    {stats.clean != null && (
+                      <>
+                        {" "}
+                        <DeltaChip v={(stats.worst[1].macro_accuracy ?? 0) - stats.clean} />
+                      </>
+                    )}
+                  </span>
+                ) : undefined
+              }
+            />
+            <StatCard
+              label="Mean degradation"
+              value={stats.meanDelta != null ? `${(stats.meanDelta * 100).toFixed(2)} pp` : "–"}
+              sub="macro accuracy vs clean, labeled distortions"
+            />
+            <StatCard
+              label="Worst FPR"
+              value={`${pct(stats.worstFpr)}%`}
+              sub="real images called AI, worst labeled distortion"
+            />
+          </div>
+        </Measure>
       )}
 
       {ds?.sweep && <SweepTable sweep={ds.sweep} />}
 
       {ds?.per_distorted && <DistortedPanel ds={ds} />}
+
+      {data && !ds && (
+        <Measure>
+          <Notice>No robustness tables in this eval dump.</Notice>
+        </Measure>
+      )}
     </div>
   );
 }
 
-/* ---------------------------------------------------------------- pieces */
-
-function DemoNote({ note }: { note?: string }) {
-  return (
-    <div className="rounded-xl border border-amber-400/20 bg-amber-500/[0.06] px-4 py-3 text-xs leading-relaxed text-amber-200/90">
-      <strong className="font-semibold">Demo data.</strong>{" "}
-      {note ?? "No real eval results found — numbers shown are placeholders."}
-    </div>
-  );
-}
-
-/** NTIRE-style clean vs distorted split (labelled distortions in the eval set). */
 function DistortedPanel({ ds }: { ds: EvalDataset }) {
   const clean = ds.per_distorted?.["clean"];
   const distorted = ds.per_distorted?.["distorted"];
   if (!clean || !distorted) return null;
   return (
-    <section className="space-y-4">
-      <div className="flex items-center gap-2.5">
-        <IconShield className="h-4 w-4 text-cyan-400" />
-        <h2 className="text-sm font-semibold text-white">
-          Clean vs distorted labels (NTIRE protocol)
-        </h2>
-      </div>
-      <div className="grid gap-4 md:grid-cols-2">
-        <div className="panel p-5">
-          <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-zinc-500">
-            Clean images
-          </p>
-          <div className="mt-2 flex items-baseline gap-2">
-            <span className="tabular text-2xl font-semibold text-white">
-              {pct(clean.macro_accuracy)}%
-            </span>
-            <span className="text-xs text-zinc-500">macro accuracy</span>
+    <section className="space-y-6">
+      <Measure>
+        <h2 className="essay-title">Clean vs distorted labels</h2>
+        <p className="mt-3 text-[16px] leading-[1.5] text-ink-body">
+          NTIRE protocol — images tagged clean or distorted in the public test.
+        </p>
+        <div className="meta-grid mt-4">
+          <div className="meta-pair">
+            <dt>Clean images</dt>
+            <dd>
+              <div className="tabular">{pct(clean.macro_accuracy)}%</div>
+              <div className="meta-sub">
+                AUROC {pct(clean.auroc)}% · n={clean.n?.toLocaleString() ?? "–"}
+              </div>
+            </dd>
           </div>
-          <p className="mt-1 text-xs text-zinc-500">
-            AUROC {pct(clean.auroc)}% · n={clean.n?.toLocaleString() ?? "–"}
-          </p>
-        </div>
-        <div className="panel p-5">
-          <p className="text-[11px] font-medium uppercase tracking-[0.16em] text-zinc-500">
-            Distorted images
-          </p>
-          <div className="mt-2 flex items-baseline gap-2">
-            <span className="tabular text-2xl font-semibold text-white">
-              {pct(distorted.macro_accuracy)}%
-            </span>
-            {clean.macro_accuracy != null && distorted.macro_accuracy != null && (
-              <DeltaChip v={distorted.macro_accuracy - clean.macro_accuracy} />
-            )}
+          <div className="meta-pair">
+            <dt>Distorted images</dt>
+            <dd>
+              <div className="tabular">
+                {pct(distorted.macro_accuracy)}%
+                {clean.macro_accuracy != null && distorted.macro_accuracy != null && (
+                  <>
+                    {" "}
+                    <DeltaChip v={distorted.macro_accuracy - clean.macro_accuracy} />
+                  </>
+                )}
+              </div>
+              <div className="meta-sub">
+                AUROC {pct(distorted.auroc)}% · n={distorted.n?.toLocaleString() ?? "–"}
+                {ds.robust_n != null && ` · robust AUROC ${pct(ds.robust_auroc)}%`}
+              </div>
+            </dd>
           </div>
-          <p className="mt-1 text-xs text-zinc-500">
-            AUROC {pct(distorted.auroc)}% · n={distorted.n?.toLocaleString() ?? "–"}
-            {ds.robust_n != null && ` · robust AUROC ${pct(ds.robust_auroc)}%`}
-          </p>
         </div>
-      </div>
+      </Measure>
 
       {ds.per_distortion && Object.keys(ds.per_distortion).length > 0 && (
-        <div className="panel overflow-hidden">
-          <div className="border-b border-white/[0.06] px-5 py-3.5">
-            <div className="flex items-center gap-2">
-              <IconChart className="h-4 w-4 text-zinc-500" />
-              <span className="text-xs font-semibold text-white">
-                By first distortion type
-              </span>
-            </div>
-          </div>
-          <div className="divide-y divide-white/[0.04]">
-            {Object.entries(ds.per_distortion)
-              .sort((a, b) => (b[1].macro_accuracy ?? 0) - (a[1].macro_accuracy ?? 0))
-              .map(([k, m]) => (
-                <div key={k} className="grid grid-cols-[1fr_auto] items-center gap-4 px-5 py-3">
-                  <span className="text-sm capitalize text-zinc-300">{k}</span>
-                  <div className="flex items-center gap-4 text-xs">
-                    <span className="tabular text-zinc-500">
-                      n={m.n?.toLocaleString() ?? "–"}
-                    </span>
-                    <span className="tabular w-14 text-right font-medium text-white">
-                      {pct(m.macro_accuracy)}%
-                    </span>
-                  </div>
-                </div>
-              ))}
-          </div>
+        <div className="figure overflow-x-auto">
+          <p className="small-head mb-2">By first distortion type</p>
+          <table className="paper-table min-w-[560px]">
+            <thead>
+              <tr>
+                <th>Distortion</th>
+                <th>n</th>
+                <th>Macro acc</th>
+                <th>FPR</th>
+                <th>FNR</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(ds.per_distortion)
+                .sort((a, b) => (b[1].macro_accuracy ?? 0) - (a[1].macro_accuracy ?? 0))
+                .map(([k, m]) => (
+                  <tr key={k}>
+                    <td>{perturbationLabel(k)}</td>
+                    <td className="tabular text-ink-mute">
+                      {m.n?.toLocaleString() ?? "–"}
+                    </td>
+                    <td className="tabular text-ink-head">{pct(m.macro_accuracy)}%</td>
+                    <td className="tabular">{pct(m.fpr)}%</td>
+                    <td className="tabular">{pct(m.fnr)}%</td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
         </div>
       )}
     </section>

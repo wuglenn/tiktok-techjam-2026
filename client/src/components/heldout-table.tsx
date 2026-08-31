@@ -1,21 +1,17 @@
 "use client";
 
-import { Fragment, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
-import { MetricBar } from "@/components/charts";
-import { IconInfo } from "@/components/icons";
+import { evalDisplayName, evalKey, finite, HELDOUT_NOTES, HELDOUT_ORDER } from "@/lib/eval-labels";
 import { pct } from "@/lib/format";
+import type { EvalDataset } from "@/lib/types";
 
-/**
- * The held-out results table from docs/deliverables/heldout-eval-step27500.md.
- * Rows can carry a note (shown via the info icon) — used for sets whose
- * collection protocol needs context to read the numbers honestly.
- */
 interface HeldoutRow {
   set: string;
+  key: string;
   note?: string;
   n: string;
-  split: string;
+  ratio: string;
   macro?: number;
   map?: number;
   auroc?: number;
@@ -24,161 +20,212 @@ interface HeldoutRow {
   fnr?: number;
 }
 
-const HELDOUT: HeldoutRow[] = [
-  {
-    set: "CommunityForensics-Eval",
-    n: "51,836",
-    split: "25,918 / 25,918",
-    macro: 0.9565,
-    map: 0.9962,
-    auroc: 0.9954,
-    f1: 0.9546,
-    fpr: 0.0018,
-    fnr: 0.0852,
-  },
-  {
-    set: "OpenFake core/test",
-    n: "89,225",
-    split: "45,697 / 43,528",
-    macro: 0.9719,
-    map: 0.9984,
-    auroc: 0.9981,
-    f1: 0.9712,
-    fpr: 0.0021,
-    fnr: 0.0542,
-  },
-  {
-    set: "OpenFake reddit/test",
-    note:
-      "In-the-wild test split only. Synthetic images are scraped from AI-generation subreddits, real images from photography subreddits — labels follow the subreddit, not the generator. Use this to evaluate how detectors trained on core transfer to naturally circulated content, with platform compression and unknown provenance.",
-    n: "36,227",
-    split: "29,116 / 7,111",
-    macro: 0.8905,
-    map: 0.9928,
-    auroc: 0.9728,
-    f1: 0.8874,
-    fpr: 0.0205,
-    fnr: 0.1984,
-  },
-  {
-    set: "MIRAGE",
-    n: "12,073",
-    split: "10,682 / 1,391",
-    macro: 0.8626,
-    map: 0.9902,
-    auroc: 0.9302,
-    f1: 0.8732,
-    fpr: 0.0554,
-    fnr: 0.2194,
-  },
-  {
-    set: "COCO val2017 (reals only)",
-    n: "5,000",
-    split: "0 / 5,000",
-    fpr: 0.001,
-  },
-];
+const SCORE_KEYS = ["macro", "map", "auroc", "f1", "fpr", "fnr"] as const;
+type ScoreKey = (typeof SCORE_KEYS)[number];
+const LOWER_IS_BETTER = new Set<ScoreKey>(["fpr", "fnr"]);
 
-export function HeldoutTable() {
-  const [open, setOpen] = useState<string | null>(null);
+function gcd(a: number, b: number): number {
+  let x = Math.abs(Math.round(a));
+  let y = Math.abs(Math.round(b));
+  while (y) {
+    const t = y;
+    y = x % y;
+    x = t;
+  }
+  return x || 1;
+}
+
+function trimZeros(s: string): string {
+  return s.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+}
+
+/** fake∶real, reduced when the parts stay small, otherwise scaled to 1. */
+function fakeRealRatio(nFake: number, nReal: number): string {
+  if (nFake === 0 && nReal === 0) return "—";
+  if (nReal === 0) return "1∶0";
+  if (nFake === 0) return "0∶1";
+  const g = gcd(nFake, nReal);
+  const a = nFake / g;
+  const b = nReal / g;
+  if (a <= 20 && b <= 20) return `${a}∶${b}`;
+  const q = nFake / nReal;
+  const digits = q >= 10 ? 1 : 2;
+  return `${trimZeros(q.toFixed(digits))}∶1`;
+}
+
+function toRow(ds: EvalDataset): HeldoutRow {
+  const m = ds.metrics;
+  const key = evalKey(ds.name, ds.file);
+  const nFake = m.n_fake ?? 0;
+  const nReal = m.n_real ?? 0;
+  const realsOnly = nFake === 0 && nReal > 0;
+  const fakesOnly = nReal === 0 && nFake > 0;
+  return {
+    set: evalDisplayName(ds.name, ds.file),
+    key,
+    note: HELDOUT_NOTES[key],
+    n: (m.n ?? 0).toLocaleString("en-US"),
+    ratio: fakeRealRatio(nFake, nReal),
+    macro: realsOnly || fakesOnly ? undefined : finite(m.macro_accuracy),
+    map: finite(m.mAP as number | undefined),
+    auroc: finite(m.auroc),
+    f1: realsOnly ? undefined : finite(m.f1),
+    fpr: fakesOnly ? undefined : finite(m.fpr),
+    fnr: realsOnly ? undefined : finite(m.fnr),
+  };
+}
+
+function bestOf(rows: HeldoutRow[], key: ScoreKey): number | undefined {
+  const vals = rows.map((r) => r[key]).filter((v): v is number => v != null);
+  if (!vals.length) return undefined;
+  return LOWER_IS_BETTER.has(key) ? Math.min(...vals) : Math.max(...vals);
+}
+
+function Score({
+  value,
+  best,
+}: {
+  value: number | undefined;
+  best: number | undefined;
+}) {
+  if (value == null) return <span className="text-ink-mute">—</span>;
+  const win = best != null && value === best;
+  return (
+    <span className={`tabular${win ? " is-best" : ""}`}>{pct(value)}</span>
+  );
+}
+
+function SetTip({ name, note }: { name: string; note?: string }) {
+  const id = useId();
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+
+  function place() {
+    const r = btnRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const width = Math.min(320, window.innerWidth - 24);
+    const left = Math.min(Math.max(12, r.left), window.innerWidth - width - 12);
+    const below = r.bottom + 8;
+    const above = r.top - 8;
+    const top = below + 140 > window.innerHeight ? above : below;
+    setPos({ top, left });
+  }
+
+  useEffect(() => {
+    if (!open) return;
+    place();
+    const onScroll = () => place();
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onScroll);
+    };
+  }, [open]);
+
+  if (!note) return <span className="text-ink-head">{name}</span>;
+
+  const showAbove = pos.top < (btnRef.current?.getBoundingClientRect().top ?? 0);
 
   return (
-    <div className="panel overflow-hidden">
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[680px] text-sm">
-          <thead>
-            <tr className="border-b border-white/[0.06] text-left text-[11px] uppercase tracking-[0.12em] text-zinc-500">
-              <th className="px-5 py-3.5 font-medium">Held-out set</th>
-              <th className="px-4 py-3.5 font-medium">n (fake / real)</th>
-              <th className="px-4 py-3.5 font-medium">Macro acc</th>
-              <th className="px-4 py-3.5 font-medium">mAP</th>
-              <th className="px-4 py-3.5 font-medium">AUROC</th>
-              <th className="px-4 py-3.5 font-medium">F1</th>
-              <th className="px-4 py-3.5 font-medium">FPR</th>
-              <th className="px-5 py-3.5 font-medium">FNR</th>
+    <span
+      className="heldout-tip"
+      onMouseEnter={() => {
+        place();
+        setOpen(true);
+      }}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <button
+        ref={btnRef}
+        type="button"
+        className="heldout-tip-trigger"
+        aria-describedby={open ? id : undefined}
+        aria-expanded={open}
+        onFocus={() => {
+          place();
+          setOpen(true);
+        }}
+        onBlur={() => setOpen(false)}
+      >
+        {name}
+      </button>
+      {open && (
+        <span
+          id={id}
+          role="tooltip"
+          className={`heldout-tip-bubble${showAbove ? " is-above" : ""}`}
+          style={{ top: pos.top, left: pos.left, width: Math.min(320, window.innerWidth - 24) }}
+        >
+          {note}
+        </span>
+      )}
+    </span>
+  );
+}
+
+export function HeldoutTable({ datasets }: { datasets: EvalDataset[] }) {
+  const ranked = [...datasets].sort((a, b) => {
+    const ia = HELDOUT_ORDER.indexOf(evalKey(a.name, a.file));
+    const ib = HELDOUT_ORDER.indexOf(evalKey(b.name, b.file));
+    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+  });
+  const rows = ranked.map(toRow);
+  const best = Object.fromEntries(
+    SCORE_KEYS.map((k) => [k, bestOf(rows, k)]),
+  ) as Record<ScoreKey, number | undefined>;
+
+  if (!rows.length) {
+    return <p className="measure caption">No held-out eval JSONs found.</p>;
+  }
+
+  return (
+    <div className="figure overflow-x-auto">
+      <table className="paper-table min-w-[620px]">
+        <thead>
+          <tr>
+            <th>Held-out set</th>
+            <th>n (fake∶real)</th>
+            <th>Macro acc</th>
+            <th>mAP</th>
+            <th>AUROC</th>
+            <th>F1</th>
+            <th>FPR</th>
+            <th>FNR</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.key}>
+              <td>
+                <SetTip name={r.set} note={r.note} />
+              </td>
+              <td className="tabular">
+                {r.n} <span className="text-ink-mute">({r.ratio})</span>
+              </td>
+              <td>
+                <Score value={r.macro} best={best.macro} />
+              </td>
+              <td>
+                <Score value={r.map} best={best.map} />
+              </td>
+              <td>
+                <Score value={r.auroc} best={best.auroc} />
+              </td>
+              <td>
+                <Score value={r.f1} best={best.f1} />
+              </td>
+              <td>
+                <Score value={r.fpr} best={best.fpr} />
+              </td>
+              <td>
+                <Score value={r.fnr} best={best.fnr} />
+              </td>
             </tr>
-          </thead>
-          <tbody>
-            {HELDOUT.map((r) => {
-              const isOpen = open === r.set;
-              return (
-                <Fragment key={r.set}>
-                  <tr
-                    className={`transition-colors hover:bg-white/[0.03] ${
-                      r !== HELDOUT[HELDOUT.length - 1]
-                        ? "border-b border-white/[0.04]"
-                        : ""
-                    }`}
-                  >
-                    <td className="px-5 py-3.5 font-medium text-zinc-100">
-                      <span className="flex items-center gap-1.5">
-                        {r.set}
-                        {r.note && (
-                          <button
-                            onClick={() => setOpen(isOpen ? null : r.set)}
-                            aria-expanded={isOpen}
-                            aria-label={`about ${r.set}`}
-                            title="about this set"
-                            className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full transition-colors ${
-                              isOpen
-                                ? "bg-cyan-500/20 text-cyan-300"
-                                : "text-zinc-500 hover:bg-white/[0.06] hover:text-zinc-300"
-                            }`}
-                          >
-                            <IconInfo className="h-3.5 w-3.5" />
-                          </button>
-                        )}
-                      </span>
-                    </td>
-                    <td className="tabular px-4 py-3.5 text-zinc-400">
-                      <span className="text-zinc-300">{r.n}</span>
-                      <span className="text-zinc-500"> ({r.split})</span>
-                    </td>
-                    <td className="px-4 py-3.5">
-                      {r.macro != null ? (
-                        <div className="flex items-center gap-2.5">
-                          <span className="tabular w-12 font-medium text-white">
-                            {pct(r.macro)}
-                          </span>
-                          <div className="w-20">
-                            <MetricBar value={r.macro} />
-                          </div>
-                        </div>
-                      ) : (
-                        <span className="text-zinc-600">—</span>
-                      )}
-                    </td>
-                    <td className="tabular px-4 py-3.5 text-zinc-300">
-                      {r.map != null ? pct(r.map) : "—"}
-                    </td>
-                    <td className="tabular px-4 py-3.5 text-zinc-300">
-                      {r.auroc != null ? pct(r.auroc) : "—"}
-                    </td>
-                    <td className="tabular px-4 py-3.5 text-zinc-300">
-                      {r.f1 != null ? pct(r.f1) : "—"}
-                    </td>
-                    <td className="tabular px-4 py-3.5 text-emerald-300/90">
-                      {r.fpr != null ? pct(r.fpr) : "—"}
-                    </td>
-                    <td className="tabular px-5 py-3.5 text-amber-300/90">
-                      {r.fnr != null ? pct(r.fnr) : "—"}
-                    </td>
-                  </tr>
-                  {isOpen && r.note && (
-                    <tr className="bg-white/[0.02]">
-                      <td colSpan={8} className="border-b border-white/[0.04] px-5 py-3.5">
-                        <p className="max-w-3xl text-[11px] leading-relaxed text-zinc-400">
-                          {r.note}
-                        </p>
-                      </td>
-                    </tr>
-                  )}
-                </Fragment>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

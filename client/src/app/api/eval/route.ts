@@ -21,7 +21,7 @@ export async function GET() {
     root,
     datasets: DEMO_DATASETS,
     note: root
-      ? "no eval JSONs under runs/ yet — run `uv run python main.py eval --checkpoint runs/seer_vitl/best.pt --dataset ntire_val --perturbation all --error-dir runs/eval/errors --out-json runs/eval/ntire_val.json` to populate this page with real numbers"
+      ? "no eval JSONs under eval/eval_step33500 or runs/ — drop a seer/eval.py --out-json dump there to replace the placeholders"
       : "Seer repo root not found — showing bundled demo data",
   };
   return NextResponse.json(body);

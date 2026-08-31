@@ -53,13 +53,12 @@ export async function POST(req: Request) {
       return NextResponse.json(body);
     } catch (err) {
       const note = err instanceof Error ? err.message : String(err);
-      const body: AnalyzeResponse = {
-        mode: "simulated",
-        checkpoint,
-        note: `live inference failed — ${note.slice(0, 400)}${note.length > 400 ? "…" : ""}`,
-        results: files.map(simulateFile),
-      };
-      return NextResponse.json(body);
+      return NextResponse.json(
+        {
+          error: `live inference failed — ${note.slice(0, 400)}${note.length > 400 ? "…" : ""}`,
+        },
+        { status: 502 },
+      );
     }
   }
 
@@ -67,7 +66,7 @@ export async function POST(req: Request) {
     mode: "simulated",
     checkpoint,
     note: root
-      ? "no checkpoint found under runs/*/best.pt (train one, or point SEER_CHECKPOINT at a .pt file) — showing deterministic simulated verdicts"
+      ? "no checkpoint found (repo-root best.pt or runs/*/best.pt). Start client/scripts/seer_serve.py or set SEER_CHECKPOINT — showing deterministic simulated verdicts"
       : "Seer repo root not found relative to the dashboard — showing deterministic simulated verdicts",
     results: files.map(simulateFile),
   };
