@@ -104,7 +104,6 @@ export default function OverviewPage() {
         <SectionHeading
           eyebrow="Evaluation"
           title="Seer on held-out data"
-          sub="runs/seer_vitl/last.pt (EMA), step 27,500 of 60,000 — clean protocol, threshold 0.5. 194,361 images across five held-out sets in 43 minutes on one RTX 4090; NTIRE val/test run inside the training loop."
         />
         <EvalResults />
       </section>

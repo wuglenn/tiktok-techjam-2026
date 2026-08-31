@@ -197,6 +197,16 @@ export function IconFlask(p: P) {
   );
 }
 
+export function IconInfo(p: P) {
+  return (
+    <svg {...base(p)}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v5" />
+      <path d="M12 7.5h.01" />
+    </svg>
+  );
+}
+
 export function IconChevron(p: P) {
   return (
     <svg {...base(p)}>

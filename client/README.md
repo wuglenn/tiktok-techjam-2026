@@ -59,7 +59,7 @@ src/
     api/analyze/route.ts  # POST images -> verdicts (live bridge or simulation)
     api/eval/route.ts     # eval JSONs from runs/ (or demo data)
     api/eval-image/route.ts  # serves runs/** error panels (path-checked)
-  components/             # shell, heat canvas, verdict widgets, charts
+  components/             # app header, heat canvas, verdict widgets, charts
   lib/                    # shared types, turbo colormap, formatting, demo data
 scripts/seer_infer.py     # JSON bridge into the seer package (spawned by the API)
 ```

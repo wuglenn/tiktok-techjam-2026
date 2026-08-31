@@ -175,6 +175,29 @@ uv run python main.py infer --checkpoint runs/seer_vitl/best.pt \
 uv run scripts/save_samples.py                                           # writes samples/
 ```
 
+## Dashboard (`client/`)
+
+A Next.js dashboard (dark mode, Geist font, Tailwind) covering the demo,
+robustness-summary, and error-analysis deliverables — with live inference
+when a checkpoint is present:
+
+| Page | Shows |
+|---|---|
+| `/analyze` | upload images → P(AI) verdict + per-patch heatmap; exports the required `image_path` / `pred` JSON |
+| `/robustness` | clean vs transformed table + charts, read from `runs/eval/*.json` |
+| `/errors` | most confident FP/FN with heatmaps, plus the trade-offs note |
+
+```bash
+cd client && npm install && npm run dev       # http://localhost:3000
+```
+
+`/api/analyze` runs the real model through `client/scripts/seer_infer.py`
+(spawned via `uv`, else the repo `.venv`) when `runs/*/best.pt` or
+`$SEER_CHECKPOINT` exists; otherwise it returns deterministic simulated
+verdicts, clearly labeled in the UI. `/robustness` and `/errors` read the
+JSONs written by `main.py eval --out-json` (+ `--error-dir` panels) and fall
+back to bundled demo data. Details: `client/README.md`.
+
 ## Throughput & the training bottleneck (measured, RTX 4070)
 
 `scripts/bench_loader.py` profiles each pipeline stage independently

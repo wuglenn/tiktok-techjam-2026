@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { GeistSans } from "geist/font/sans";
 
-import { Shell } from "@/components/shell";
+import { AppHeader } from "@/components/app-header";
 
 import "./globals.css";
 
@@ -20,7 +20,10 @@ export default function RootLayout({
   return (
     <html lang="en" className={GeistSans.variable}>
       <body className="min-h-screen font-sans antialiased">
-        <Shell>{children}</Shell>
+        <AppHeader />
+        <main className="mx-auto w-full max-w-6xl px-4 pb-24 pt-8 sm:px-6 lg:px-8 lg:pt-12">
+          {children}
+        </main>
       </body>
     </html>
   );
