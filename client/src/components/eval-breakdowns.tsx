@@ -7,14 +7,14 @@ import { pct } from "@/lib/format";
 
 /**
  * Per-set detail from docs/deliverables/heldout-eval-step27500.md, tabbed so
- * the overview stays scannable: CompEval generator families, OpenFake
- * core/test per-generator, and MIRAGE per-source.
+ * the overview stays scannable: CommunityForensics generator families,
+ * OpenFake core/test per-generator, and MIRAGE per-source.
  */
 
 const TABS = [
-  { label: "CompEval families", hint: "CommunityForensics-Eval by architecture family" },
-  { label: "OpenFake generators", hint: "core/test, fake-only buckets" },
-  { label: "MIRAGE sources", hint: "human-verified in-the-wild" },
+  { label: "Community Forensics", hint: "CommunityForensics-Eval by architecture family" },
+  { label: "OpenFake", hint: "core/test, fake-only buckets" },
+  { label: "MIRAGE", hint: "human-verified in-the-wild" },
 ] as const;
 
 const COMPFOR_FAMILIES = [
@@ -49,16 +49,88 @@ const OPENFAKE_GENERATORS = [
 ];
 
 const MIRAGE_SOURCES = [
-  { source: "RMG", n: "2,499 / 0", acc: 0.9888, recall: 0.9888 },
-  { source: "PCRMG", n: "565 / 0", acc: 0.9805, recall: 0.9805 },
-  { source: "T2I", n: "3,391 / 0", acc: 0.9106, recall: 0.9106 },
-  { source: "IID", n: "883 / 798", acc: 0.837, recall: 0.7293, fpr: 0.0439 },
-  { source: "OOD-R", n: "609 / 593", acc: 0.782, recall: 0.6388, fpr: 0.0708 },
-  { source: "CB", n: "286 / 0", acc: 0.535, recall: 0.535 },
-  { source: "TR", n: "427 / 0", acc: 0.4707, recall: 0.4707 },
-  { source: "FS", n: "218 / 0", acc: 0.445, recall: 0.445 },
-  { source: "IP/OP", n: "990 / 0", acc: 0.4283, recall: 0.4283 },
-  { source: "IE", n: "814 / 0", acc: 0.3894, recall: 0.3894 },
+  {
+    source: "RMG",
+    name: "Realistic model generation",
+    desc: "Full-body e-commerce model shots — LoRA-tuned T2I renders the person, real garments composited in",
+    n: "2,499 / 0",
+    acc: 0.9888,
+    recall: 0.9888,
+  },
+  {
+    source: "PCRMG",
+    name: "Pose-consistent model generation",
+    desc: "RMG plus DWPose + ControlNet, keeping the original photo's pose",
+    n: "565 / 0",
+    acc: 0.9805,
+    recall: 0.9805,
+  },
+  {
+    source: "T2I",
+    name: "Text-to-image",
+    desc: "Vanilla outputs from generators unseen in the ID split — CogView4, Bagel, Wan2.1, HiDream, UniDiffuser",
+    n: "3,391 / 0",
+    acc: 0.9106,
+    recall: 0.9106,
+  },
+  {
+    source: "IID",
+    name: "In-distribution, human-curated",
+    desc: "Curated real + fake and ID-split T2I — the benchmark's ID test set",
+    n: "883 / 798",
+    acc: 0.837,
+    recall: 0.7293,
+    fpr: 0.0439,
+  },
+  {
+    source: "OOD-R",
+    name: "Out-of-distribution, human-curated",
+    desc: "Expert-verified real + fake from a platform source the ID split never saw",
+    n: "609 / 593",
+    acc: 0.782,
+    recall: 0.6388,
+    fpr: 0.0708,
+  },
+  {
+    source: "CB",
+    name: "Background replacement",
+    desc: "Subject cut out; new background generated from the original caption",
+    n: "286 / 0",
+    acc: 0.535,
+    recall: 0.535,
+  },
+  {
+    source: "TR",
+    name: "Virtual try-on",
+    desc: "Clothing transferred between two model photos, then locally inpainted",
+    n: "427 / 0",
+    acc: 0.4707,
+    recall: 0.4707,
+  },
+  {
+    source: "FS",
+    name: "Face swap",
+    desc: "Faces exchanged between two real photos, then restored",
+    n: "218 / 0",
+    acc: 0.445,
+    recall: 0.445,
+  },
+  {
+    source: "IP/OP",
+    name: "Inpainting / outpainting",
+    desc: "Masked regions regenerated, or the canvas extended and filled",
+    n: "990 / 0",
+    acc: 0.4283,
+    recall: 0.4283,
+  },
+  {
+    source: "IE",
+    name: "Instruction-based editing",
+    desc: "Natural-language edits from Flux-Kontext-class editors",
+    n: "814 / 0",
+    acc: 0.3894,
+    recall: 0.3894,
+  },
 ];
 
 export function EvalBreakdowns() {
@@ -135,12 +207,6 @@ function CompforFamilies() {
           </table>
         </div>
       </div>
-      <p className="mt-3 max-w-3xl text-xs leading-relaxed text-zinc-500">
-        Open generators (GAN, latent diffusion, other) are essentially solved.
-        The gap sits in commercial and pixel-space diffusion — pixel-space
-        still ranks high (mAP 98.84%) but 26.6% of its fakes fall under the
-        0.5 threshold.
-      </p>
     </div>
   );
 }
@@ -221,7 +287,15 @@ function MirageSources() {
                     i < MIRAGE_SOURCES.length - 1 ? "border-b border-white/[0.04]" : ""
                   }`}
                 >
-                  <td className="px-5 py-2.5 font-medium text-zinc-100">{s.source}</td>
+                  <td className="px-5 py-2.5">
+                    <div className="font-medium text-zinc-100">
+                      {s.name}{" "}
+                      <span className="text-[11px] font-normal text-zinc-500">{s.source}</span>
+                    </div>
+                    <div className="mt-0.5 max-w-[260px] text-[11px] leading-snug text-zinc-500">
+                      {s.desc}
+                    </div>
+                  </td>
                   <td className="tabular px-4 py-2.5 text-zinc-400">{s.n}</td>
                   <td className="px-4 py-2.5">
                     <div className="flex items-center gap-2.5">
@@ -242,12 +316,14 @@ function MirageSources() {
         </div>
       </div>
       <p className="mt-3 max-w-3xl text-xs leading-relaxed text-zinc-500">
-        Human-verified in-the-wild set; source codes are MIRAGE&rsquo;s own tags,
-        not generator names. T2I / RMG (the bulk of the fakes) are easy. The
-        failure modes are in-painting, face-swap and image-editing (IE / IP-OP /
-        FS / TR / CB) — exactly the composite-like edits the patch head is meant
-        to catch, but this pass is page-level only. FPR on the mixed real slices
-        runs 4–7%.
+        MIRAGE tags each image by how it was built, not by which generator
+        built it. Full-image synthesis is largely solved — text-to-image and
+        the two composite model-shot pipelines recall at 91–99%. The hole is
+        local edits: instruction editing, inpainting/outpainting, face swap,
+        try-on and background swap sit at 39–54% — exactly the composite-like
+        edits the patch head is meant to catch, but this pass is page-level
+        only. The two mixed real/fake slices are the human-curated ones, and
+        that is where the 4–7% FPR lives.
       </p>
     </div>
   );

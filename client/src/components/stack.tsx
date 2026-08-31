@@ -314,7 +314,7 @@ const TABS: StackTab[] = [
           {
             name: "CommunityForensics-Eval",
             meta: "51,836",
-            role: "21 generators, balanced 25,918/25,918 — the CompEval protocol with a per-architecture breakdown.",
+            role: "21 generators, balanced 25,918/25,918 — the Pangram evaluation protocol with a per-architecture breakdown.",
             href: "https://huggingface.co/datasets/OwensLab/CommunityForensics-Small",
           },
           {

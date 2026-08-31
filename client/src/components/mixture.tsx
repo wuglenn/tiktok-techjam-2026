@@ -45,7 +45,7 @@ const SOURCES: MixtureSource[] = [
     real: 278096,
     total: 556541,
     generators: "4,782 — 19 named + 4,763 HF community",
-    note: "Paired real/fake images from open generators; the strongest driver of unseen-architecture transfer. The CompEval split is held out for evaluation.",
+    note: "Paired real/fake images from open generators; the strongest driver of unseen-architecture transfer. The CommunityForensics-Eval split is held out for evaluation.",
     fetch: "scripts/fetch_data.py comfor-small",
     href: "https://huggingface.co/datasets/OwensLab/CommunityForensics-Small",
   },
