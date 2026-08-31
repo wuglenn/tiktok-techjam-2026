@@ -5,6 +5,7 @@ import { HeroDemo } from "@/components/hero-demo";
 import { EvalResults } from "@/components/eval-results";
 import { FlowDiagram } from "@/components/flow-diagram";
 import { MixtureTable } from "@/components/mixture";
+import { StackTabs } from "@/components/stack";
 import {
   IconArrowRight,
   IconChart,
@@ -116,6 +117,16 @@ export default function OverviewPage() {
           sub="Ten public sources weighted by measured difficulty — 2.58M usable images, 1.70M fake and 875K real. Select a source for its contents and how to fetch it."
         />
         <MixtureTable />
+      </section>
+
+      {/* ---------------------------------------------------------- stack */}
+      <section>
+        <SectionHeading
+          eyebrow="Built with"
+          title="Tools, models, libraries, and data"
+          sub="The full inventory behind every number above — what the work was done in, what the model is made of, what it depends on, and what it was trained and tested on."
+        />
+        <StackTabs />
       </section>
 
       {/* ------------------------------------------------------ footer */}
