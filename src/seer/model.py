@@ -20,6 +20,7 @@ Total parameters with DINOv3 ViT-L: ~302M (15% of the 2B budget).
 
 import inspect
 import re
+from pathlib import Path
 from typing import List, Optional
 
 import torch
@@ -29,6 +30,14 @@ import torch.nn.functional as F
 from . import PARAM_BUDGET
 
 DEFAULT_BACKBONE = "facebook/dinov3-vitl16-pretrain-lvd1689m"
+
+# Architecture-only configs shipped in-tree so `predict.py` can rebuild the
+# Seer detector from a Hub checkpoint without accepting the gated DINOv3
+# licence. Weights still come from the .pt (or huggingface.co/glennwuwu/seer).
+_BUNDLED_BACKBONE_CONFIGS = {
+    "facebook/dinov3-vitl16-pretrain-lvd1689m": "assets/dinov3-vitl16",
+    "camenduru/dinov3-vitl16-pretrain-lvd1689m": "assets/dinov3-vitl16",
+}
 
 
 def _tiny_backbone() -> nn.Module:
@@ -86,6 +95,14 @@ def resolve_attn_implementation(requested: str = "auto") -> str:
     return "sdpa"
 
 
+def _bundled_config_dir(name: str) -> Optional[Path]:
+    rel = _BUNDLED_BACKBONE_CONFIGS.get(name)
+    if not rel:
+        return None
+    path = Path(__file__).resolve().parent / rel
+    return path if (path / "config.json").is_file() else None
+
+
 def load_backbone(
     name: str,
     pretrained: bool = True,
@@ -112,6 +129,12 @@ def load_backbone(
                 "model page and authenticate with `hf auth login`, or point "
                 "`backbone` at an open checkpoint such as 'facebook/dinov2-large'."
             ) from e
+    # Inference path: architecture only. Prefer the in-repo config so scoring
+    # a glennwuwu/seer checkpoint does not require gated DINOv3 Hub access.
+    bundled = _bundled_config_dir(name)
+    if bundled is not None:
+        cfg = AutoConfig.from_pretrained(bundled)
+        return AutoModel.from_config(cfg, **kwargs)
     cfg = AutoConfig.from_pretrained(name)
     return AutoModel.from_config(cfg, **kwargs)
 
@@ -418,8 +441,13 @@ def save_checkpoint(path, model: SeerDetector, cfg, step: int, optimizer=None, s
 
 
 def load_checkpoint(path, device="cpu", prefer_ema: bool = True) -> tuple:
-    """Returns (model, cfg_dict, ckpt)."""
-    ckpt = torch.load(path, map_location=device, weights_only=False)
+    """Returns (model, cfg_dict, ckpt).
+
+    The .pt is always deserialized on CPU. A TechJam `best.pt` is ~4.9 GB
+    (model + EMA + optimizer); mapping that whole blob onto CUDA first will
+    OOM a 10 GB card. The live module is moved to `device` after load.
+    """
+    ckpt = torch.load(path, map_location="cpu", weights_only=False)
     cfg_dict = ckpt.get("train_cfg") or {}
     backbone = cfg_dict.get("backbone") or ckpt.get("backbone_name") or DEFAULT_BACKBONE
     probe_cfg = cfg_dict.get("probe") or {}

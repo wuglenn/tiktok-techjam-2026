@@ -12,13 +12,16 @@ Track 5). Dark-mode, Geist Sans, Tailwind CSS. Node **≥ 20.9**.
 
 ## Run it
 
-Weights are **not in git** (`*.pt` is gitignored). There is no download URL
-in this repo — without a local checkpoint, `/analyze` is **SIMULATED**.
+Weights are **not in git** (`*.pt` is gitignored). The scoring checkpoint is
+[glennwuwu/seer](https://huggingface.co/glennwuwu/seer); from the repo root,
+`uv run python predict.py --image-dir ./images` downloads `best.pt` on first
+use. Without a local or cached checkpoint, `/analyze` is **SIMULATED**.
 Prefer keeping the model in memory; otherwise `/api/analyze` respawns
 `client/scripts/seer_infer.py` on every upload.
 
 ```bash
 # 1. put best.pt at the repo root (or export SEER_CHECKPOINT=/path/to/best.pt)
+#    First-run: uv run python predict.py --image-dir ./images  (downloads Hub weights)
 
 # 2. persistent inference server (bound to 127.0.0.1)
 uv run python client/scripts/seer_serve.py --checkpoint best.pt

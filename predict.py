@@ -4,7 +4,12 @@ TikTok TechJam 2026 Track 5 deliverable: takes an image directory and writes a
 JSON file with one `{"image_path", "pred"}` record per image, where `pred` is
 P(AI-generated) in [0, 1].
 
-    uv run python predict.py --image-dir ./images --checkpoint best.pt --out preds.json
+Weights default to https://huggingface.co/glennwuwu/seer (`best.pt`) and are
+downloaded on the first run if no local checkpoint is found.
+
+    # install uv if needed:  curl -LsSf https://astral.sh/uv/install.sh | sh
+    uv sync --frozen          # install exact versions from uv.lock
+    uv run python predict.py --image-dir ./images --out preds.json
 
     [
       {"image_path": "images/photo_001.jpg", "pred": 0.0031},
@@ -25,6 +30,7 @@ Useful extras:
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import os
 import sys
@@ -36,17 +42,91 @@ from typing import Iterator, List, Optional, Sequence
 # Allow `python predict.py` from a clean checkout, without installing the package.
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-import torch
-from PIL import Image, ImageFile
+try:
+    import torch
+    from PIL import Image, ImageFile
 
-from seer.augment import eval_transform
-from seer.heatmap import patch_logits_to_heat, save_heatmap
-from seer.model import load_checkpoint
+    from seer.augment import eval_transform
+    from seer.heatmap import patch_logits_to_heat, save_heatmap
+    from seer.model import load_checkpoint
+except ImportError as exc:  # pragma: no cover - install hint for a bare checkout
+    if __name__ == "__main__":
+        sys.exit(
+            f"Missing dependency: {exc}\n"
+            "From the repo root:\n"
+            "  curl -LsSf https://astral.sh/uv/install.sh | sh   # if `uv` is not on PATH\n"
+            "  source $HOME/.local/bin/env\n"
+            "  uv sync --frozen                                 # install uv.lock\n"
+            "  uv run python predict.py --image-dir ./images --out preds.json"
+        )
+    raise
+
+HF_REPO_ID = "glennwuwu/seer"
+HF_WEIGHTS = "best.pt"
 
 # Truncated JPEGs are common in scraped corpora; a partial decode beats a crash.
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff", ".gif"}
+
+
+def download_hub_checkpoint(quiet: bool = False) -> str:
+    """Fetch `best.pt` from huggingface.co/glennwuwu/seer into the Hub cache."""
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError as exc:
+        raise SystemExit(
+            "huggingface-hub is required to download weights.\n"
+            "From the repo root:  uv sync"
+        ) from exc
+
+    if not quiet:
+        print(
+            f"[download] https://huggingface.co/{HF_REPO_ID} "
+            f"({HF_WEIGHTS}, ~4.9 GB, first run only)"
+        )
+    try:
+        path = hf_hub_download(repo_id=HF_REPO_ID, filename=HF_WEIGHTS)
+    except Exception as exc:  # noqa: BLE001 - surface Hub/network errors as a hint
+        raise SystemExit(
+            f"Could not download {HF_REPO_ID}/{HF_WEIGHTS}: {exc}\n"
+            "Check your network, or download best.pt from\n"
+            f"  https://huggingface.co/{HF_REPO_ID}\n"
+            "and pass --checkpoint /path/to/best.pt"
+        ) from exc
+    if not quiet:
+        print(f"[weights] {path}")
+    return path
+
+
+def resolve_checkpoint(checkpoint: Optional[str] = None, quiet: bool = False) -> str:
+    """Local path, $SEER_CHECKPOINT, repo-root best.pt, or Hub download.
+
+    An explicit --checkpoint that is missing is an error unless it is the
+    default Hub filename (`best.pt`), in which case we download.
+    """
+    if checkpoint:
+        p = Path(checkpoint).expanduser()
+        if p.is_file():
+            return str(p.resolve())
+        if p.name != HF_WEIGHTS:
+            raise FileNotFoundError(
+                f"checkpoint not found: {checkpoint}\n"
+                "Place a .pt file there, or omit --checkpoint to download "
+                f"https://huggingface.co/{HF_REPO_ID}"
+            )
+
+    env = os.environ.get("SEER_CHECKPOINT")
+    if env:
+        ep = Path(env).expanduser()
+        if ep.is_file():
+            return str(ep.resolve())
+
+    repo_best = Path(__file__).resolve().parent / HF_WEIGHTS
+    if repo_best.is_file():
+        return str(repo_best)
+
+    return download_hub_checkpoint(quiet=quiet)
 
 
 def find_images(root: str, recursive: bool = True, exts: Optional[set] = None) -> List[str]:
@@ -124,7 +204,7 @@ def _prior_scores(progress_path: Path, out_path: Path, threshold: float) -> dict
 
 @torch.no_grad()
 def predict_dir(
-    checkpoint: str,
+    checkpoint: Optional[str],
     image_dir: str,
     out: str = "predictions.json",
     out_detailed: Optional[str] = None,
@@ -140,11 +220,22 @@ def predict_dir(
     resume: bool = False,
     quiet: bool = False,
 ) -> List[dict]:
-    paths = find_images(image_dir, recursive=recursive)
+    try:
+        paths = find_images(image_dir, recursive=recursive)
+    except FileNotFoundError as exc:
+        raise SystemExit(str(exc)) from exc
     if limit:
         paths = paths[:limit]
     if not paths:
-        raise SystemExit(f"no images found under {image_dir}")
+        raise SystemExit(
+            f"no images found under {image_dir}\n"
+            "Pass a folder of JPEG/PNG/WebP images, or a single image path."
+        )
+
+    try:
+        checkpoint = resolve_checkpoint(checkpoint, quiet=quiet)
+    except FileNotFoundError as exc:
+        raise SystemExit(str(exc)) from exc
 
     # Scores land in a JSONL sidecar as they are produced, so an interrupted
     # run over a large directory can pick up where it stopped.
@@ -157,7 +248,11 @@ def predict_dir(
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     if not quiet:
         print(f"[load] {checkpoint} -> {dev}")
-    model, cfg_dict, ckpt = load_checkpoint(checkpoint, device=dev)
+    model, cfg_dict, ckpt = load_checkpoint(checkpoint, device="cpu")
+    for key in ("model", "ema", "optimizer", "scheduler"):
+        ckpt[key] = None
+    gc.collect()
+    model.to(dev).eval()
     res = res or int(cfg_dict.get("res", 512))
     if not quiet:
         step = ckpt.get("step")
@@ -302,10 +397,26 @@ def main(argv=None):
     p = argparse.ArgumentParser(
         description="Score every image in a directory for AI generation.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="Output: JSON array of {image_path, pred} where pred = P(AI-generated).",
+        epilog=(
+            "Output: JSON array of {image_path, pred} where pred = P(AI-generated).\n"
+            "\n"
+            "Quick start:\n"
+            "  curl -LsSf https://astral.sh/uv/install.sh | sh   # if uv is missing\n"
+            "  uv sync --frozen                                 # install uv.lock\n"
+            "  uv run python predict.py --image-dir ./images --out preds.json\n"
+            "\n"
+            "Weights default to https://huggingface.co/glennwuwu/seer (auto-download)."
+        ),
     )
     p.add_argument("--image-dir", required=True, help="directory of images (or a single image)")
-    p.add_argument("--checkpoint", default="best.pt", help="trained Seer checkpoint")
+    p.add_argument(
+        "--checkpoint",
+        default=None,
+        help=(
+            "trained Seer .pt (default: $SEER_CHECKPOINT, then ./best.pt, "
+            f"then download https://huggingface.co/{HF_REPO_ID})"
+        ),
+    )
     p.add_argument("--out", default="predictions.json", help="output JSON path")
     p.add_argument("--out-detailed", default=None, help="optional richer JSON (label, size, run metadata)")
     p.add_argument("--heatmap-dir", default=None, help="also write a per-patch AI heatmap PNG per image")

@@ -29,9 +29,18 @@ gen = [
 
 [tool.uv]
 package = true
+# Force the lockfile to include a macOS ARM torch wheel. Without this, uv.lock
+# only records CUDA 12.4 Linux/Windows builds and `uv run` fails on a MacBook.
+required-environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
 
 [tool.uv.sources]
-torch = [{ index = "pytorch-cu124" }]
+# CUDA wheels have no macOS build. Darwin uses the default PyPI torch (MPS/CPU).
+torch = [
+    { index = "pytorch-cu124", marker = "sys_platform != 'darwin'" },
+]
 
 [[tool.uv.index]]
 name = "pytorch-cu124"
@@ -44,3 +53,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/seer"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/seer/assets" = "seer/assets"
