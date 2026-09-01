@@ -122,7 +122,7 @@ export default function AnalyzePage() {
       <Measure className="essay">
         <h1 className="essay-title">Analyze an image</h1>
         <p className="mt-4">
-          I run the detector on whatever you bring. The global head returns
+          We run the detector on whatever you bring. The global head returns
           P(AI); the local head returns the per-patch heatmap — the overlay
           shows which regions pushed the verdict.
         </p>

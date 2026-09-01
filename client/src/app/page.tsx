@@ -98,7 +98,7 @@ export default function OverviewPage() {
         <h2 className="essay-title">The mixture</h2>
         <p className="mt-4">
           Ten public sources, weighted by measured difficulty. 2.58 million
-          usable images: 1.70 million fake and 875 thousand real. I open a
+          usable images: 1.70 million fake and 875 thousand real. We open a
           source for what is in it and how to fetch it. Weights decide draw
           probability, not disk usage.
         </p>
@@ -108,7 +108,7 @@ export default function OverviewPage() {
       </div>
 
       <Measure className="essay mt-10">
-        <h2 className="essay-title">What I trained with</h2>
+        <h2 className="essay-title">What we trained with</h2>
         <p className="mt-4">
           The tools, models, libraries, and data that produced the numbers
           above. Only the parts that shaped the result.

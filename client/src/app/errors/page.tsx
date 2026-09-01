@@ -84,14 +84,14 @@ export default function ErrorsPage() {
       {fps.length > 0 && (
         <ErrorSection
           title="False positives"
-          blurb="Real photographs the live checkpoint called AI. False positives are rare on this mix — these three are DOCCI and ImageNet stills from OpenFake core/test, scored on the same best.pt the dashboard uses."
+          blurb="Real photographs the live checkpoint called AI."
           entries={fps}
         />
       )}
       {fns.length > 0 && (
         <ErrorSection
           title="False negatives"
-          blurb="Generated images the checkpoint called real. Three clean stills from different generators — DALL·E 3 Advanced, Midjourney 7, and Ideogram 2.0 — scored on the same best.pt, not a compression story."
+          blurb="Generated images the checkpoint called real."
           entries={fns}
         />
       )}
