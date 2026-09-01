@@ -217,13 +217,22 @@ def predict_dir(
     resume: bool = False,
     quiet: bool = False,
 ) -> List[dict]:
-    paths = find_images(image_dir, recursive=recursive)
+    try:
+        paths = find_images(image_dir, recursive=recursive)
+    except FileNotFoundError as exc:
+        raise SystemExit(str(exc)) from exc
     if limit:
         paths = paths[:limit]
     if not paths:
-        raise SystemExit(f"no images found under {image_dir}")
+        raise SystemExit(
+            f"no images found under {image_dir}\n"
+            "Pass a folder of JPEG/PNG/WebP images, or a single image path."
+        )
 
-    checkpoint = resolve_checkpoint(checkpoint, quiet=quiet)
+    try:
+        checkpoint = resolve_checkpoint(checkpoint, quiet=quiet)
+    except FileNotFoundError as exc:
+        raise SystemExit(str(exc)) from exc
 
     # Scores land in a JSONL sidecar as they are produced, so an interrupted
     # run over a large directory can pick up where it stopped.
