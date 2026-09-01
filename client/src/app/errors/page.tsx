@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { Chip, Measure, Notice, Tabs } from "@/components/essay";
-import { HeatCanvas, HeatLegend } from "@/components/heat-canvas";
+import { HeatLegend } from "@/components/heat-canvas";
 import { ProbBar } from "@/components/verdict";
 import { evalDisplayName } from "@/lib/eval-labels";
 import type { ErrorEntry, EvalResponse } from "@/lib/types";
@@ -144,19 +144,31 @@ function ErrorSection({
   );
 }
 
+const ERROR_SRC: Record<string, string> = {
+  "fp-1": "/errors/fp_01_p0.986_docci.png",
+  "fp-2": "/errors/fp_02_p0.728_imagenet.png",
+  "fp-3": "/errors/fp_03_p0.647_docci.png",
+  "fn-1": "/errors/fn_01_p0.032_1d4135eb385210a437a2c66e5a1487c1.png",
+  "fn-2": "/errors/fn_02_p0.004_midjourney-7.png",
+  "fn-3": "/errors/fn_03_p0.318_ideogram-2.0.png",
+};
+
 function errorImageSrc(e: ErrorEntry): string | null {
-  if (!e.imageAvailable || !e.file) return null;
-  const rel = e.file.replace(/^public\//, "");
-  if (rel.startsWith("errors/")) return `/${rel}`;
-  return `/api/eval-image?src=${encodeURIComponent(e.file)}`;
+  return ERROR_SRC[`${e.kind}-${e.rank}`] ?? null;
 }
 
 function ErrorFigure({ e }: { e: ErrorEntry }) {
   const src = errorImageSrc(e);
   return (
     <figure className="figure">
-      <div className="figure-frame relative aspect-video">
-        <HeatCanvas grid={e.grid ?? null} src={src} opacity={0.6} />
+      <div className="figure-frame relative aspect-video overflow-hidden">
+        {src ? (
+          <img
+            src={src}
+            alt=""
+            className="absolute inset-0 h-full w-full object-contain"
+          />
+        ) : null}
       </div>
       <figcaption className="caption">
         {e.kind === "fp" ? "false positive" : "false negative"} · #{e.rank}
