@@ -26,12 +26,37 @@ where `pred` is **P(AI-generated) ∈ [0, 1]**.
 Weights live on Hugging Face: **[glennwuwu/seer](https://huggingface.co/glennwuwu/seer)**
 (`best.pt`, ~4.9 GB). The first run downloads them automatically.
 
+`uv` is **not** shipped with this repo. If `uv: command not found`, install it
+first, then install the exact packages pinned in [`uv.lock`](uv.lock).
+
 ```bash
-# 1. install (needs [uv](https://docs.astral.sh/uv/) and Python ≥ 3.10)
-uv sync
+# 0. install uv (once). macOS / Linux:
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source $HOME/.local/bin/env          # or open a new terminal
+# Homebrew alternative:  brew install uv
+# Docs: https://docs.astral.sh/uv/getting-started/installation/
+
+uv --version                         # confirm it is on PATH
+
+# 1. install dependencies from uv.lock (creates .venv, does not rewrite the lock)
+uv sync --frozen
 
 # 2. score every image in a directory (or pass a single image path)
 uv run python predict.py --image-dir ./images --out preds.json
+```
+
+`--frozen` is the lockfile install: uv reads `uv.lock` and installs those
+versions only. Use `uv sync --locked` if you also want uv to error when
+`pyproject.toml` and `uv.lock` are out of date.
+
+**macOS / CPU (MacBook, no NVIDIA GPU).** `uv.lock` pins the CUDA 12.4 torch
+wheel, which has no macOS build. Install everything else from the lock, then
+a Mac/CPU torch:
+
+```bash
+uv sync --frozen --no-install-package torch
+uv pip install "torch>=2.6,<3"
+uv run python predict.py --image-dir ./images --device cpu --out preds.json
 ```
 
 That is the whole getting-started path. No extra Hub login is required for
@@ -117,29 +142,61 @@ required sections.
 ## Setup and installation
 
 Python **≥ 3.10** (`.python-version` is 3.10). Node **≥ 20.9** for
-`client/`. Install [uv](https://docs.astral.sh/uv/) first.
+`client/`. The Python env is managed by [uv](https://docs.astral.sh/uv/);
+[`uv.lock`](uv.lock) pins every package version (including hashes).
 
-`pyproject.toml` pins torch to the **CUDA 12.4** wheel index
-(`pytorch-cu124`). That is the only supported pinned path — **macOS and
-CPU-only installs are not**. A CPU `predict.py` / dashboard pass can
-still run if you already have a checkpoint and a working torch, but do
-not expect `uv sync` to give you a macOS/CPU build.
+### Install uv
+
+`uv` is a separate tool — cloning this repo does not put it on your PATH.
+If the shell says `uv: command not found`:
 
 ```bash
-# 1. Python env (CUDA 12.4 torch)
-uv sync
-# optional, only for scripts/generate_mirrors.py:
-uv sync --group gen
+# macOS / Linux (standalone installer)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source $HOME/.local/bin/env          # reload PATH in this terminal
 
-# 2. Hugging Face auth — only for *training / data fetch*
-#    (DINOv3 and jp1924/Laion400m-1 are gated). Scoring via predict.py
-#    does not need this: it downloads glennwuwu/seer automatically.
+# macOS via Homebrew
+brew install uv
+```
+
+Windows: `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`.
+Full list: https://docs.astral.sh/uv/getting-started/installation/
+
+### Install dependencies from `uv.lock`
+
+```bash
+# exact versions + hashes from uv.lock; will not rewrite the lockfile
+uv sync --frozen
+
+# same, but fail if pyproject.toml and uv.lock have drifted
+uv sync --locked
+
+# optional extras (not required for predict.py)
+uv sync --frozen --group gen         # scripts/generate_mirrors.py only
+```
+
+`pyproject.toml` pins torch to the **CUDA 12.4** wheel index
+(`pytorch-cu124`). That is what `uv.lock` records — Linux/Windows GPU.
+On **macOS or CPU-only**, skip the CUDA wheel and install a platform torch
+after the lockfile sync:
+
+```bash
+uv sync --frozen --no-install-package torch
+uv pip install "torch>=2.6,<3"
+```
+
+Then `uv run python predict.py --image-dir ./images --device cpu`.
+
+```bash
+# Hugging Face auth — only for *training / data fetch*
+# (DINOv3 and jp1924/Laion400m-1 are gated). Scoring via predict.py
+# does not need this: it downloads glennwuwu/seer automatically.
 hf auth login          # or: export HF_TOKEN=...
 
-# 3. data root (required on macOS/Linux)
+# data root (required before fetching or training)
 export SEER_DATA_ROOT=/path/to/data
 
-# 4. dashboard (Node)
+# dashboard (Node)
 cd client && npm install
 ```
 

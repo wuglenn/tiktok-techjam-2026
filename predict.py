@@ -7,7 +7,8 @@ P(AI-generated) in [0, 1].
 Weights default to https://huggingface.co/glennwuwu/seer (`best.pt`) and are
 downloaded on the first run if no local checkpoint is found.
 
-    uv sync
+    # install uv if needed:  curl -LsSf https://astral.sh/uv/install.sh | sh
+    uv sync --frozen          # install exact versions from uv.lock
     uv run python predict.py --image-dir ./images --out preds.json
 
     [
@@ -53,7 +54,9 @@ except ImportError as exc:  # pragma: no cover - install hint for a bare checkou
         sys.exit(
             f"Missing dependency: {exc}\n"
             "From the repo root:\n"
-            "  uv sync\n"
+            "  curl -LsSf https://astral.sh/uv/install.sh | sh   # if `uv` is not on PATH\n"
+            "  source $HOME/.local/bin/env\n"
+            "  uv sync --frozen                                 # install uv.lock\n"
             "  uv run python predict.py --image-dir ./images --out preds.json"
         )
     raise
@@ -398,7 +401,8 @@ def main(argv=None):
             "Output: JSON array of {image_path, pred} where pred = P(AI-generated).\n"
             "\n"
             "Quick start:\n"
-            "  uv sync\n"
+            "  curl -LsSf https://astral.sh/uv/install.sh | sh   # if uv is missing\n"
+            "  uv sync --frozen                                 # install uv.lock\n"
             "  uv run python predict.py --image-dir ./images --out preds.json\n"
             "\n"
             "Weights default to https://huggingface.co/glennwuwu/seer (auto-download)."
