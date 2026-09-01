@@ -4,9 +4,9 @@ const NAMES: Record<string, string> = {
   openfake_test: "OpenFake core/test",
   openfake_reddit: "OpenFake reddit/test",
   mirage: "MIRAGE",
-  coco_val2017: "COCO val2017 (reals only)",
   ntire_test: "NTIRE 2026 public test",
-  wildfake_dalle_advanced: "WildFake DALL·E Advanced",
+  coco_val2017: "COCO val2017 (reals only)",
+  wildfake_dalle_advanced: "WildFake DALL·E Advanced (fakes only)",
 };
 
 const FAMILY: Record<string, string> = {
@@ -76,8 +76,8 @@ export const HELDOUT_ORDER = [
   "openfake_test",
   "openfake_reddit",
   "mirage",
-  "coco_val2017",
   "ntire_test",
+  "coco_val2017",
   "wildfake_dalle_advanced",
 ];
 

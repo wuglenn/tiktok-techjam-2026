@@ -148,16 +148,6 @@ const TABS: StackTab[] = [
           },
         ],
       },
-      {
-        label: "Generated assets in this repo",
-        items: [
-          {
-            name: "best.pt",
-            meta: "~4.9 GB",
-            role: "Trained checkpoint: model weights, EMA shadow, and optimizer state.",
-          }
-        ],
-      },
     ],
     note: "Everything is public. The loader hard-refuses any path under openfake/holdout_*, core/test, reddit/test, comfor-eval, or COCO val2017, so a held-out image cannot leak into training through a config mistake. Community Forensics is CC BY-NC-SA 4.0 and OpenFake CC-BY-SA-4.0 with non-commercial restrictions, so this is a non-commercial research artifact; no third-party media is redistributed.",
   },

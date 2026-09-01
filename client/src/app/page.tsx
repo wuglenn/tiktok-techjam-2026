@@ -18,16 +18,14 @@ export default function OverviewPage() {
           TikTok TechJam 2026 · Track 5 · DINOv3 ViT-L
         </p>
         <p className="mt-6">
-          The budget is two billion parameters. We used 302 million: DINOv3 ViT-L,
-          fully fine-tuned, with a global head for the page-level verdict and a
-          local head for a 32×32 patch map. One forward pass returns both.
+          The budget is two billion parameters. We used 302 million: DINOv3
+          ViT-L, fully fine-tuned, with a global head for the page-level verdict
+          and a local head for a 32×32 patch map.
         </p>
         <p>
-          Training is public data only, 2.58 million usable images, weighted by
-          how hard each source is, then run through wild-simulation augmentation
-          so JPEG and resize do not wipe the fingerprint. The rest of this page
-          is the architecture, the held-out numbers, the mixture, and the tools.
-          {" "}
+          Training is public data only, 2.58 million images, comprising AI
+          generated images from different generator architectures — ranging from
+          older GANs to frontier diffusion models.{" "}
           <Link href="/analyze">Analyze</Link> runs the checkpoint on an image
           you bring.
         </p>
@@ -65,15 +63,14 @@ export default function OverviewPage() {
       </Measure>
 
       <Measure className="essay mt-10">
-        <h2 className="essay-title">How a verdict is made</h2>
+        <h2 className="essay-title">Architecture</h2>
         <p className="mt-4">
-          Seer is one network, not a classifier plus a separate localizer. A
-          DINOv3 ViT-L/16 is fine-tuned end to end so the features themselves
-          learn generator traces.
+          The DINOv3 ViT-L/16 backbone is fine-tuned not just for image
+          classification but also with patch-level supervision.
         </p>
         <p>
-          We put a heatmap on every result so the verdict is not a black box:
-          it shows which patches the model treats as generated.
+          We put a heatmap on every result so the verdict is not a black box: it
+          shows which patches the model treats as generated.
         </p>
       </Measure>
       <div className="mt-6">
@@ -89,8 +86,8 @@ export default function OverviewPage() {
         <h2 className="essay-title">Held-out numbers</h2>
         <p className="mt-4">
           These are Seer&apos;s own held-out scores from various community
-          datasets. The NTIRE 2026 open-test leaderboard sits under the table
-          so the public-test AUROC can be read next to the published entries.
+          datasets. The NTIRE 2026 open-test leaderboard sits under the table so
+          the public-test AUROC can be read next to the published entries.
         </p>
       </Measure>
       <div className="mt-6">
