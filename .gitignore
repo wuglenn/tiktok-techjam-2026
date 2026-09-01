@@ -49,6 +49,13 @@ predictions.json
 preds.json
 *.progress.jsonl
 
+# Local scoring inputs for: uv run python predict.py --image-dir ./images
+# `/images/**` ignores the whole tree (including nested folders).
+# `images/*` only matches *direct* children — not `images/nested/photo.jpg`
+# — and never untracks files Git already knows (`git rm -r --cached images`).
+/images/**
+!/images/.gitkeep
+
 # --- Training runs (logs, heatmaps, checkpoints) ---
 runs/
 
