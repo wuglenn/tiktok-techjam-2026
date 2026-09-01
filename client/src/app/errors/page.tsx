@@ -67,14 +67,6 @@ export default function ErrorsPage() {
         </Measure>
       )}
 
-      {ds?.file && (
-        <Measure>
-          <p className="caption">
-            source: {ds.file} · {evalDisplayName(ds.name, ds.file)}
-          </p>
-        </Measure>
-      )}
-
       {data && !ds && (
         <Measure>
           <Notice>No error-analysis panels in this eval dump.</Notice>
