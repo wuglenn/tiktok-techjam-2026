@@ -44,6 +44,7 @@ uv --version
 uv sync --frozen
 
 # score every image in a directory (or pass a single image path)
+# writes preds.json and infer-style original|heatmap PNGs under output/
 uv run python predict.py --image-dir ./images --out preds.json
 
 # Apple Silicon / no NVIDIA GPU:
@@ -72,6 +73,16 @@ from `glennwuwu/seer`. Later runs reuse the Hugging Face cache, a repo-root
 ]
 ```
 
+The same command also writes `main.py infer` two-panel charts (original on
+the left, per-patch AI heatmap overlay on the right) to `output/`:
+
+```
+output/photo_001_heatmap.png
+output/render_014_heatmap.png
+```
+
+Pass `--no-heatmap` for JSON only.
+
 `pred` is a score, not a hard decision. Metrics in this repo are reported at
 threshold 0.5. JPEG / PNG / WebP / BMP / TIFF / GIF are scanned recursively.
 
@@ -84,7 +95,8 @@ threshold 0.5. JPEG / PNG / WebP / BMP / TIFF / GIF are scanned recursively.
 | `--batch-size` | 16 | inference batch |
 | `--no-recursive` | off | do not descend into subdirectories |
 | `--limit` | 0 (all) | score only the first N images |
-| `--heatmap-dir` | off | per-patch AI heatmap PNG next to every verdict |
+| `--heatmap-dir` | `output/` | infer-style original \| heatmap PNG per image (`main.py infer`) |
+| `--no-heatmap` | off | JSON only; skip the panels |
 | `--out-detailed` | off | richer JSON (label, size, heatmap path, run metadata) |
 | `--resume` | off | continue an interrupted directory run |
 
@@ -281,7 +293,8 @@ Flags:
 | `--checkpoint` | auto (`glennwuwu/seer`) | trained Seer checkpoint |
 | `--out` | `predictions.json` | official `{image_path, pred}` JSON |
 | `--out-detailed` | off | richer JSON (label, size, heatmap path, run metadata) |
-| `--heatmap-dir` | off | per-patch AI heatmap PNG next to every verdict |
+| `--heatmap-dir` | `output/` | infer-style original \| heatmap PNG per image (`main.py infer`) |
+| `--no-heatmap` | off | JSON only; skip the panels |
 | `--batch-size` | 16 | inference batch |
 | `--workers` | 8 | decode threads |
 | `--res` | checkpoint's | override input resolution |

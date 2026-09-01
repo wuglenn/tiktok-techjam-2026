@@ -43,6 +43,7 @@ hf_cache/
 # --- Generated sample images ---
 samples/
 out/
+output/
 
 # --- Inference outputs ---
 predictions.json
