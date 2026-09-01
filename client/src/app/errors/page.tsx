@@ -154,7 +154,8 @@ function ErrorSection({
 
 function errorImageSrc(e: ErrorEntry): string | null {
   if (!e.imageAvailable || !e.file) return null;
-  if (e.file.startsWith("errors/")) return `/${e.file}`;
+  const rel = e.file.replace(/^public\//, "");
+  if (rel.startsWith("errors/")) return `/${rel}`;
   return `/api/eval-image?src=${encodeURIComponent(e.file)}`;
 }
 
