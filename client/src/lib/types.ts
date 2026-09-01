@@ -91,17 +91,16 @@ export interface ModalStatus {
   error?: string | null;
 }
 
+/** Result of POST /api/analyze. There is no simulated mode — either a
+ * backend scores the images or the request fails with an error. */
 export interface AnalyzeResponse {
-  mode: "live" | "simulated";
-  /** which backend produced the results */
-  backend?: "local" | "modal";
+  backend: "local" | "modal";
   checkpoint?: string | null;
-  note?: string | null;
   results: AnalyzeResult[];
 }
 
 export interface StatusResponse {
-  mode: "live" | "simulated";
+  mode: "live" | "unavailable";
   checkpoint: string | null;
   root: string | null;
   uv: string | null;

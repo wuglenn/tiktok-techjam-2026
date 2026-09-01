@@ -337,11 +337,10 @@ cd client && npm install && npm run dev                          # http://localh
 | `/robustness` | clean vs transformed table + charts, NTIRE leaderboard |
 | `/errors` | most confident FP/FN with heatmaps |
 
-Upload limits: 12 images / 40 MB each. Without a local or cached
-checkpoint, `/analyze` runs in simulated mode. `/analyze` can also score
-on a remote Modal GPU deployment (no local weights needed) — deploy with
-`modal deploy client/scripts/modal_seer.py`, export `SEER_MODAL_URL`, and
-flip the "Score on Modal" flag; see
+Upload limits: 12 images / 40 MB each. `/analyze` scores on a remote Modal
+GPU deployment (no local weights needed — deploy with `modal deploy
+client/scripts/modal_seer.py` and set `SEER_MODAL_URL`), except on
+localhost where a local model is available; there is no simulated mode. See
 [`client/README.md`](client/README.md#modal-deployment-remote-gpu).
 
 ---

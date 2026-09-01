@@ -35,19 +35,13 @@ export async function GET() {
     };
   }
 
-  const localCheckpoint = root ? findCheckpoint(root) : null;
+  const localCheckpoint = server?.checkpoint ?? (root ? findCheckpoint(root) : null);
   const uv = root ? findPython(root) : null;
-  const localLive = Boolean(server?.ok) || Boolean(localCheckpoint && uv && !server);
-  // a configured Modal deployment counts as live even when the probe times
-  // out — the container is merely scaled down and boots on the next request
-  const live = localLive || Boolean(modalUrl);
-  // display checkpoint = what the local bridge would serve; a modal-only
-  // setup surfaces its URL through status.modal instead (the page keys its
-  // "local available" check off this field, so it must stay local-only)
-  const checkpoint = server?.checkpoint ?? localCheckpoint ?? null;
+  const localPossible = Boolean(server?.ok) || Boolean(localCheckpoint && uv);
+  const live = localPossible || Boolean(modalUrl);
   const body: StatusResponse = {
-    mode: live ? "live" : "simulated",
-    checkpoint,
+    mode: live ? "live" : "unavailable",
+    checkpoint: localCheckpoint ?? null,
     root,
     uv,
     server: server ? inferServerUrl() : null,

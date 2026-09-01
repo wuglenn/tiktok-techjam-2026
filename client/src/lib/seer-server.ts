@@ -11,7 +11,6 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { hashBytes, syntheticGrid } from "./heat";
 import type { AnalyzeResult, ErrorEntry, EvalDataset, MetricsRow } from "./types";
 
 /** Walk up from cwd until the Seer repo root (has src/seer + pyproject). */
@@ -443,31 +442,6 @@ export async function runBridge(
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
-}
-
-/** Deterministic simulated verdict (demo mode — clearly labeled in the UI). */
-export function simulateFile(f: UploadFile): AnalyzeResult {
-  const seed = hashBytes(new Uint8Array(f.buf));
-  let s = seed >>> 0;
-  const rng = () => {
-    // xorshift32 — cheap and deterministic
-    s ^= s << 13;
-    s ^= s >>> 17;
-    s ^= s << 5;
-    s >>>= 0;
-    return s / 4294967296;
-  };
-  const isAI = rng() < 0.45;
-  const prob = isAI ? 0.8 + 0.199 * rng() : 0.02 + 0.17 * rng();
-  return {
-    name: f.name,
-    prob_ai: Math.round(prob * 1e6) / 1e6,
-    label: prob >= 0.5 ? "AI" : "REAL",
-    grid: syntheticGrid(seed, prob),
-    ...imageDims(f.buf),
-    bytes: f.buf.length,
-    type: f.type,
-  };
 }
 
 /** Python eval dumps write `NaN`; JSON.parse rejects that. */

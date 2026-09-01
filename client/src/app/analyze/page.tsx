@@ -19,12 +19,8 @@ export default function AnalyzePage() {
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [meta, setMeta] = useState<AnalyzeResponse | null>(null);
   const [dragging, setDragging] = useState(false);
   const [status, setStatus] = useState<StatusResponse | null>(null);
-  // null = no explicit choice yet — falls back to "use Modal when it is the
-  // only backend" (see effectiveUseModal below)
-  const [useModal, setUseModal] = useState<boolean | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -43,33 +39,6 @@ export default function AnalyzePage() {
     };
   }, []);
 
-  // restore the persisted backend flag after mount (avoids an SSR/localStorage
-  // hydration mismatch); an unset key stays null so the default can apply
-  useEffect(() => {
-    try {
-      const saved = window.localStorage.getItem("seer-use-modal");
-      if (saved === "1" || saved === "0") setUseModal(saved === "1");
-    } catch {
-      /* private mode etc. */
-    }
-  }, []);
-
-  const toggleModal = useCallback((next: boolean) => {
-    setUseModal(next);
-    try {
-      window.localStorage.setItem("seer-use-modal", next ? "1" : "0");
-    } catch {
-      /* private mode etc. */
-    }
-  }, []);
-
-  // Which backend an upload will use: the explicit toggle when the user has
-  // set one, otherwise Modal whenever there is no local checkpoint/server.
-  const modalConfigured = Boolean(status?.modal);
-  const localAvailable = Boolean(status?.server || (status?.checkpoint && status?.uv));
-  const effectiveUseModal = useModal ?? (modalConfigured && !localAvailable);
-  const modalActive = Boolean(meta ? meta.backend === "modal" : effectiveUseModal);
-
   const run = useCallback(async (fileList: FileList | File[]) => {
     const files = Array.from(fileList).filter((f) => f.type.startsWith("image/"));
     if (!files.length) return;
@@ -82,14 +51,12 @@ export default function AnalyzePage() {
     try {
       const form = new FormData();
       batch.forEach((f) => form.append("files", f));
-      if (effectiveUseModal) form.append("backend", "modal");
       const res = await fetch("/api/analyze", { method: "POST", body: form });
       const data = (await res.json()) as AnalyzeResponse & { error?: string };
       if (!res.ok) {
         setError(data.error ?? `request failed (${res.status})`);
         return;
       }
-      setMeta(data);
       setCards((prev) => {
         const next = [...prev];
         data.results.forEach((r, i) => {
@@ -104,7 +71,7 @@ export default function AnalyzePage() {
       setBusy(false);
       setPending(0);
     }
-  }, [effectiveUseModal]);
+  }, []);
 
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
@@ -157,52 +124,14 @@ export default function AnalyzePage() {
           P(AI); the local head returns the per-patch heatmap — the overlay
           shows which regions pushed the verdict.
         </p>
-        <div className="mt-3">
-          <ModeBadge meta={meta} status={status} />
-        </div>
-        {status?.modal && (
-          <label className="caption mt-3 flex w-fit cursor-pointer select-none items-center gap-2">
-            <input
-              type="checkbox"
-              checked={effectiveUseModal}
-              onChange={(e) => toggleModal(e.target.checked)}
-              className="size-3.5 accent-current"
-            />
-            <span>
-              Score on Modal{" "}
-              {status.modal.ok
-                ? `— remote ${status.modal.device ?? "GPU"}, ready`
-                : status.modal.ok === false
-                  ? `— ${status.modal.error ?? "not ready"}`
-                  : "— cold; the first request boots the GPU container"}
-            </span>
-          </label>
-        )}
       </Measure>
 
       <Measure>
-        {(meta?.mode === "simulated" || (!meta && status && status.mode !== "live")) && (
+        {status?.mode === "unavailable" && (
           <Notice>
-            {status?.error ? "The checkpoint is still loading. " : "Demo mode. "}
-            {meta?.note ??
-              status?.error ??
-              "Waiting for the live checkpoint — start client/scripts/seer_serve.py with best.pt."}
-          </Notice>
-        )}
-        {(meta?.mode === "live" || (!meta && status?.mode === "live")) && (
-          <Notice>
-            {modalActive ? "Live model on Modal." : "Live model."} Serving{" "}
-            {modalActive
-              ? (meta?.checkpoint ?? status?.modal?.url)
-              : (meta?.checkpoint ?? status?.checkpoint)}
-            {modalActive
-              ? status?.modal?.device
-                ? ` (${status.modal.device})`
-                : " (boots on first request)"
-              : status?.device
-                ? ` on ${status.device}`
-                : " through the Python bridge"}
-            .
+            No inference backend. Deploy one with modal deploy
+            client/scripts/modal_seer.py and set SEER_MODAL_URL, or run
+            client/scripts/seer_serve.py locally.
           </Notice>
         )}
         {error && <Notice>{error}</Notice>}
@@ -239,7 +168,6 @@ export default function AnalyzePage() {
                 onClick={() => {
                   cards.forEach((c) => URL.revokeObjectURL(c.url));
                   setCards([]);
-                  setMeta(null);
                 }}
               >
                 clear
@@ -274,24 +202,6 @@ export default function AnalyzePage() {
         </div>
       )}
     </div>
-  );
-}
-
-function ModeBadge({
-  meta,
-  status,
-}: {
-  meta: AnalyzeResponse | null;
-  status: StatusResponse | null;
-}) {
-  const live =
-    meta?.mode === "live" ||
-    (!meta && (status?.mode === "live" || Boolean(status?.modal)));
-  if (!meta && !status) return null;
-  return (
-    <span className="essay-kicker">
-      {live ? "live inference" : status?.error ? "loading model" : "simulated"}
-    </span>
   );
 }
 

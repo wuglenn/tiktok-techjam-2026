@@ -15,9 +15,10 @@ Track 5). Dark-mode, Geist Sans, Tailwind CSS. Node **≥ 20.9**.
 Weights are **not in git** (`*.pt` is gitignored). The scoring checkpoint is
 [glennwuwu/seer](https://huggingface.co/glennwuwu/seer); from the repo root,
 `uv run python predict.py --image-dir ./images` downloads `best.pt` on first
-use. Without a local or cached checkpoint, `/analyze` is **SIMULATED**.
-Prefer keeping the model in memory; otherwise `/api/analyze` respawns
-`client/scripts/seer_infer.py` on every upload.
+use. On localhost with a local model available, `/api/analyze` uses it
+(prefer keeping the model in memory via `seer_serve.py`; otherwise it
+respawns `client/scripts/seer_infer.py` per upload). Everywhere else it
+scores on the Modal deployment (`SEER_MODAL_URL`).
 
 ```bash
 # 1. put best.pt at the repo root (or export SEER_CHECKPOINT=/path/to/best.pt)
@@ -55,12 +56,12 @@ export SEER_MODAL_URL=https://<workspace>--seer-seer-api.modal.run
 cd client && npm run dev
 ```
 
-With `SEER_MODAL_URL` set, `/analyze` shows a **Score on Modal** flag. Tick it
-and uploads are POSTed to the deployment (`backend=modal` on `/api/analyze`);
-without it everything runs locally as before. The choice is remembered in
-`localStorage`. `/api/status` reports deployment health — a cold container
-boots on the first request (~1–2 min including the 4.9 GB load; the Volume
-pre-fetch above is what keeps it off the GPU clock).
+`/api/analyze` scores on this deployment whenever the dashboard is **not**
+running on localhost with a working local model — any hosted deployment uses
+Modal by default. There is no simulated mode: if no backend is reachable, the
+request fails with an error instead of returning fake verdicts. A cold
+container boots on the first request (~1–2 min including the 4.9 GB load; the
+Volume pre-fetch above is what keeps it off the GPU clock).
 
 | Command | What it does |
 | --- | --- |
@@ -83,7 +84,7 @@ or front it with your own auth.
 | `SEER_CHECKPOINT` | discovery below | live-inference weights |
 | `SEER_PYTHON` | `uv run python`, else repo `.venv` | interpreter for `seer_infer.py` / `seer_serve.py` |
 | `SEER_INFER_URL` | `http://127.0.0.1:8765` | persistent inference server |
-| `SEER_MODAL_URL` | — | Modal deployment URL ([`scripts/modal_seer.py`](scripts/modal_seer.py)); enables the "Score on Modal" flag |
+| `SEER_MODAL_URL` | — | Modal deployment URL ([`scripts/modal_seer.py`](scripts/modal_seer.py)); the default backend away from localhost |
 | `HF_TOKEN` | — | gated Hub access if the Python side has to fetch a backbone; not required once a local `.pt` is present |
 | `SEER_DATA_ROOT` | `/workspace/data` if writable, else `F:/techjam` | **not** read by the Next app; only Python training / eval / fetch scripts |
 
@@ -92,24 +93,22 @@ the newest `runs/*/best.pt` (preferring `seer_vitl*` runs).
 
 Upload limits: **12 images / 40 MB each**.
 
-## Live inference vs simulated mode
+## Inference backends
 
-The dashboard works in two modes and labels itself honestly in either:
+`/api/analyze` picks exactly one backend — there is no simulated fallback:
 
-- **Live** — a checkpoint is found *and* a Python interpreter is found
-  (`$SEER_PYTHON`, else `uv`, else the repo `.venv`). `/api/analyze`
-  prefers `seer_serve.py` on `:8765`. If nothing is listening it writes
-  uploads to `.seer-tmp/` and spawns `scripts/seer_infer.py` per request.
-  Each image returns `{prob_ai, label, grid}` — `grid` is the local
-  head's raw patch probabilities (heatmaps work; probe checkpoints
-  include a patch head too).
-- **Live on Modal** — with `SEER_MODAL_URL` set, the "Score on Modal" flag
-  sends uploads to the remote deployment instead; no local checkpoint,
-  interpreter, or repo root is required. Same `{prob_ai, label, grid}`
-  records, same heatmap rendering.
-- **Simulated** — no checkpoint (or no interpreter / no repo root).
-  `/api/analyze` returns deterministic fake verdicts seeded from the file
-  bytes. The UI marks every simulated result.
+- **Local** — only when the dashboard itself runs on localhost *and* a model
+  is available: `seer_serve.py` on `:8765`, else a discoverable checkpoint
+  plus a Python interpreter (`$SEER_PYTHON`, else `uv`, else the repo
+  `.venv`). Nothing listening → uploads go to `.seer-tmp/` and
+  `scripts/seer_infer.py` is spawned per request. Each image returns
+  `{prob_ai, label, grid}` — `grid` is the local head's raw patch
+  probabilities (heatmaps work; probe checkpoints include a patch head too).
+- **Modal** — everything else, whenever `SEER_MODAL_URL` is set: hosted
+  deployments score remotely with no local weights, interpreter, or repo
+  root. Same `{prob_ai, label, grid}` records, same heatmap rendering.
+- **Error** — no reachable backend: the API answers 503 with setup
+  instructions rather than fake verdicts.
 
 `/robustness` and `/errors` scan the committed suite bundled at
 `client/eval/eval_step33500/` first, then `runs/eval/` and `runs/` from
@@ -137,7 +136,7 @@ src/
     robustness/page.tsx   # clean vs transformed tables & charts
     errors/page.tsx       # FP/FN gallery + trade-offs note
     api/status/route.ts   # mode / checkpoint / interpreter probe
-    api/analyze/route.ts  # POST images -> verdicts (live bridge or simulation)
+    api/analyze/route.ts  # POST images -> verdicts (local or Modal backend; errors otherwise)
     api/eval/route.ts     # eval JSONs from eval/eval_step33500, then runs/
     api/eval-image/route.ts  # serves error-panel PNGs (path-checked)
   components/             # app header, heat canvas, verdict widgets, charts

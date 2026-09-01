@@ -100,5 +100,67 @@
       "mAP": NaN
     }
   },
-  "checkpoint": "runs/seer_vitl/last.pt"
+  "checkpoint": "runs/seer_vitl/last.pt",
+  "error_analysis": [
+    {
+      "kind": "fn",
+      "rank": 1,
+      "file": "eval/eval_step33500/errors_dalle_advanced/fn_01_p0.032_1d4135eb385210a437a2c66e5a1487c1.png",
+      "prob_ai": 0.03173828125,
+      "label": 1,
+      "explained": true,
+      "generator": "DALL\u00b7E 3 Advanced",
+      "distortions": []
+    },
+    {
+      "kind": "fn",
+      "rank": 2,
+      "file": "eval/eval_step33500/errors_dalle_advanced/fn_02_p0.089_028b1feecc4b4099cfa277a93c725eea.png",
+      "prob_ai": 0.089,
+      "label": 1,
+      "explained": true,
+      "generator": "DALL\u00b7E 3 Advanced",
+      "distortions": []
+    },
+    {
+      "kind": "fn",
+      "rank": 3,
+      "file": "eval/eval_step33500/errors_dalle_advanced/fn_03_p0.103_95dd959ea9b96dcef876c87b57fcc58b.png",
+      "prob_ai": 0.103,
+      "label": 1,
+      "explained": true,
+      "generator": "DALL\u00b7E 3 Advanced",
+      "distortions": []
+    },
+    {
+      "kind": "fn",
+      "rank": 4,
+      "file": "eval/eval_step33500/errors_dalle_advanced/fn_04_p0.111_830e6b1cfa79dcb875db2f09e838e863.png",
+      "prob_ai": 0.111,
+      "label": 1,
+      "explained": true,
+      "generator": "DALL\u00b7E 3 Advanced",
+      "distortions": []
+    },
+    {
+      "kind": "fn",
+      "rank": 5,
+      "file": "eval/eval_step33500/errors_dalle_advanced/fn_05_p0.111_830e6b1cfa79dcb875db2f09e838e863.png",
+      "prob_ai": 0.111,
+      "label": 1,
+      "explained": true,
+      "generator": "DALL\u00b7E 3 Advanced",
+      "distortions": []
+    },
+    {
+      "kind": "fn",
+      "rank": 6,
+      "file": "eval/eval_step33500/errors_dalle_advanced/fn_06_p0.111_830e6b1cfa79dcb875db2f09e838e863.png",
+      "prob_ai": 0.111,
+      "label": 1,
+      "explained": true,
+      "generator": "DALL\u00b7E 3 Advanced",
+      "distortions": []
+    }
+  ]
 }

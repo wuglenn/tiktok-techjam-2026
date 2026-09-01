@@ -1,8 +1,9 @@
 """Modal deployment for the Seer AI-generated image detector.
 
 Serves the scoring checkpoint (huggingface.co/glennwuwu/seer, `best.pt`,
-~4.9 GB) from a Modal GPU container. The dashboard talks to it through the
-"Score on Modal" flag on /analyze — see client/README.md.
+~4.9 GB) from a Modal GPU container. The dashboard scores here by default
+whenever it is not running on localhost with a working local model — see
+client/README.md.
 
 The HTTP contract mirrors client/scripts/seer_serve.py so the dashboard's
 health probe works unchanged, except images travel as base64 instead of
