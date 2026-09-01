@@ -22,7 +22,9 @@ export default function AnalyzePage() {
   const [meta, setMeta] = useState<AnalyzeResponse | null>(null);
   const [dragging, setDragging] = useState(false);
   const [status, setStatus] = useState<StatusResponse | null>(null);
-  const [useModal, setUseModal] = useState(false);
+  // null = no explicit choice yet — falls back to "use Modal when it is the
+  // only backend" (see effectiveUseModal below)
+  const [useModal, setUseModal] = useState<boolean | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -42,10 +44,11 @@ export default function AnalyzePage() {
   }, []);
 
   // restore the persisted backend flag after mount (avoids an SSR/localStorage
-  // hydration mismatch), and write it back only on user action
+  // hydration mismatch); an unset key stays null so the default can apply
   useEffect(() => {
     try {
-      setUseModal(window.localStorage.getItem("seer-use-modal") === "1");
+      const saved = window.localStorage.getItem("seer-use-modal");
+      if (saved === "1" || saved === "0") setUseModal(saved === "1");
     } catch {
       /* private mode etc. */
     }
@@ -60,6 +63,13 @@ export default function AnalyzePage() {
     }
   }, []);
 
+  // Which backend an upload will use: the explicit toggle when the user has
+  // set one, otherwise Modal whenever there is no local checkpoint/server.
+  const modalConfigured = Boolean(status?.modal);
+  const localAvailable = Boolean(status?.server || (status?.checkpoint && status?.uv));
+  const effectiveUseModal = useModal ?? (modalConfigured && !localAvailable);
+  const modalActive = Boolean(meta ? meta.backend === "modal" : effectiveUseModal);
+
   const run = useCallback(async (fileList: FileList | File[]) => {
     const files = Array.from(fileList).filter((f) => f.type.startsWith("image/"));
     if (!files.length) return;
@@ -72,7 +82,7 @@ export default function AnalyzePage() {
     try {
       const form = new FormData();
       batch.forEach((f) => form.append("files", f));
-      if (useModal) form.append("backend", "modal");
+      if (effectiveUseModal) form.append("backend", "modal");
       const res = await fetch("/api/analyze", { method: "POST", body: form });
       const data = (await res.json()) as AnalyzeResponse & { error?: string };
       if (!res.ok) {
@@ -94,7 +104,7 @@ export default function AnalyzePage() {
       setBusy(false);
       setPending(0);
     }
-  }, [useModal]);
+  }, [effectiveUseModal]);
 
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
@@ -154,7 +164,7 @@ export default function AnalyzePage() {
           <label className="caption mt-3 flex w-fit cursor-pointer select-none items-center gap-2">
             <input
               type="checkbox"
-              checked={useModal}
+              checked={effectiveUseModal}
               onChange={(e) => toggleModal(e.target.checked)}
               className="size-3.5 accent-current"
             />
@@ -181,12 +191,14 @@ export default function AnalyzePage() {
         )}
         {(meta?.mode === "live" || (!meta && status?.mode === "live")) && (
           <Notice>
-            {meta?.backend === "modal" ? "Live model on Modal." : "Live model."} Serving{" "}
-            {meta?.checkpoint ?? status?.checkpoint}
-            {meta?.backend === "modal"
+            {modalActive ? "Live model on Modal." : "Live model."} Serving{" "}
+            {modalActive
+              ? (meta?.checkpoint ?? status?.modal?.url)
+              : (meta?.checkpoint ?? status?.checkpoint)}
+            {modalActive
               ? status?.modal?.device
                 ? ` (${status.modal.device})`
-                : ""
+                : " (boots on first request)"
               : status?.device
                 ? ` on ${status.device}`
                 : " through the Python bridge"}
@@ -274,7 +286,7 @@ function ModeBadge({
 }) {
   const live =
     meta?.mode === "live" ||
-    (!meta && (status?.mode === "live" || Boolean(status?.modal?.ok)));
+    (!meta && (status?.mode === "live" || Boolean(status?.modal)));
   if (!meta && !status) return null;
   return (
     <span className="essay-kicker">

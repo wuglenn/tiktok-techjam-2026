@@ -109,12 +109,15 @@ export async function POST(req: Request) {
     }
   }
 
+  const modal = modalServerUrl();
   const body: AnalyzeResponse = {
     mode: "simulated",
     checkpoint,
-    note: root
-      ? "no checkpoint found (repo-root best.pt or runs/*/best.pt). Start client/scripts/seer_serve.py or set SEER_CHECKPOINT — showing deterministic simulated verdicts"
-      : "Seer repo root not found relative to the dashboard — showing deterministic simulated verdicts",
+    note: modal
+      ? "no local checkpoint — tick “Score on Modal” to run inference on the remote deployment"
+      : root
+        ? "no checkpoint found (repo-root best.pt or runs/*/best.pt). Start client/scripts/seer_serve.py or set SEER_CHECKPOINT — showing deterministic simulated verdicts"
+        : "Seer repo root not found relative to the dashboard — showing deterministic simulated verdicts",
     results: files.map(simulateFile),
   };
   return NextResponse.json(body);
