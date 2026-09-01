@@ -16,12 +16,16 @@ downloaded on the first run if no local checkpoint is found.
       {"image_path": "images/render_014.png", "pred": 0.9994}
     ]
 
+Each image also gets the same two-panel chart as `main.py infer`
+(original | AI heatmap overlay) under `output/` (`photo_001_heatmap.png`).
+
 `pred` is a score, not a decision: pick the operating threshold that suits the
 deployment. We report metrics at 0.5.
 
 Useful extras:
 
-    --heatmap-dir out/heat    per-patch AI heatmap PNG next to every verdict
+    --heatmap-dir DIR         write panels somewhere other than output/
+    --no-heatmap              JSON only (skip the infer-style panels)
     --out-detailed rich.json  adds label / decode size / heatmap path per image
     --resume                  continue an interrupted run over a large directory
     --hflip-tta               average the score over the horizontal flip
@@ -208,7 +212,7 @@ def predict_dir(
     image_dir: str,
     out: str = "predictions.json",
     out_detailed: Optional[str] = None,
-    heatmap_dir: Optional[str] = None,
+    heatmap_dir: Optional[str] = "output",
     batch_size: int = 16,
     workers: int = 8,
     res: Optional[int] = None,
@@ -306,6 +310,11 @@ def predict_dir(
                     if (patch is not None and heatmap_dir)
                     else None
                 )
+                if heatmap_dir and patch is None and not quiet:
+                    print(
+                        "[heatmap] this checkpoint has no per-patch head; "
+                        "skipping infer-style panels"
+                    )
 
                 for i, (p, _, img) in enumerate(ok):
                     prob = float(probs[i])
@@ -318,7 +327,9 @@ def predict_dir(
                     }
                     if heats is not None:
                         stem = Path(p).stem
-                        heat_path = os.path.join(heatmap_dir, f"{stem}_p{prob:.3f}_heatmap.png")
+                        # Same two-panel PNG as `main.py infer --out-dir`
+                        # (input | turbo overlay), written under output/.
+                        heat_path = os.path.join(heatmap_dir, f"{stem}_heatmap.png")
                         save_heatmap(heat_path, img, heats[i], prob, res)
                         detail["heatmap"] = _posix(heat_path)
                     records.append(detail)
@@ -405,6 +416,7 @@ def main(argv=None):
             "  uv sync --frozen                                 # install uv.lock\n"
             "  uv run python predict.py --image-dir ./images --out preds.json\n"
             "\n"
+            "Writes preds.json plus infer-style original|heatmap PNGs under output/.\n"
             "Weights default to https://huggingface.co/glennwuwu/seer (auto-download)."
         ),
     )
@@ -419,7 +431,16 @@ def main(argv=None):
     )
     p.add_argument("--out", default="predictions.json", help="output JSON path")
     p.add_argument("--out-detailed", default=None, help="optional richer JSON (label, size, run metadata)")
-    p.add_argument("--heatmap-dir", default=None, help="also write a per-patch AI heatmap PNG per image")
+    p.add_argument(
+        "--heatmap-dir",
+        default="output",
+        help="directory for infer-style original|heatmap PNGs (default: output/)",
+    )
+    p.add_argument(
+        "--no-heatmap",
+        action="store_true",
+        help="skip heatmap panels; write JSON only",
+    )
     p.add_argument("--batch-size", type=int, default=16)
     p.add_argument("--workers", type=int, default=8, help="decode threads")
     p.add_argument("--res", type=int, default=None, help="override the checkpoint's input resolution")
@@ -437,7 +458,7 @@ def main(argv=None):
         image_dir=args.image_dir,
         out=args.out,
         out_detailed=args.out_detailed,
-        heatmap_dir=args.heatmap_dir,
+        heatmap_dir=None if args.no_heatmap else args.heatmap_dir,
         batch_size=args.batch_size,
         workers=args.workers,
         res=args.res,

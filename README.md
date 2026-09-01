@@ -17,6 +17,9 @@
 
 ```bash
 uv sync --frozen
+
+# score every image in a directory (or pass a single image path)
+# writes preds.json and infer-style original|heatmap PNGs under output/
 uv run python predict.py --image-dir ./images --out preds.json
 ```
 
@@ -246,13 +249,17 @@ uv run python predict.py --image-dir ./images --device cpu --out preds.json  # n
 ]
 ```
 
+The same run also writes `main.py infer`-style two-panel PNGs (original |
+per-patch AI heatmap) to `output/`; pass `--no-heatmap` for JSON only.
+
 | Flag | Default | What it does |
 |---|---|---|
 | `--image-dir` | required | directory of images, or a single image |
 | `--checkpoint` | auto | local `.pt`, else download [glennwuwu/seer](https://huggingface.co/glennwuwu/seer) |
 | `--out` | `predictions.json` | output JSON |
 | `--out-detailed` | off | richer JSON (label, size, heatmap path, run metadata) |
-| `--heatmap-dir` | off | per-patch AI heatmap PNG per image |
+| `--heatmap-dir` | `output/` | infer-style original \| heatmap PNG per image (`main.py infer`) |
+| `--no-heatmap` | off | JSON only; skip the panels |
 | `--batch-size` | 16 | inference batch |
 | `--workers` | 8 | decode threads |
 | `--res` | checkpoint's | override input resolution |
