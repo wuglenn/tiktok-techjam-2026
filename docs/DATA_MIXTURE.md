@@ -1,15 +1,23 @@
 # Training data mixture
 
 Canonical train mix for the hero recipe (`configs/seer_vitl_512.yaml`) and the
-page-level probe (`configs/seer_probe.yaml`). Those two configs share the same
-`data.sources` list and weights so the continuation vs probe comparison is
-honest.
+frozen-backbone probe (`configs/seer_probe.yaml`, page head **and** patch head).
+Those two configs share the same `data.sources` list and weights so the
+continuation vs probe comparison is honest.
 
 `seer_vitl_local.yaml` and `seer_vits_debug.yaml` do **not** use this mixture
-(they fall back to a single Community Forensics stream).
+(they fall back to a single Community Forensics stream). The debug recipe is
+DINOv2-S @ 224, not a random tiny backbone.
 
-Roots default to `$SEER_DATA_ROOT` (`/workspace/data` on the network volume,
-otherwise `F:/techjam`). Paths below are written as `$SEER_DATA_ROOT/<name>`.
+Roots: `$SEER_DATA_ROOT`. If unset, `src/seer/paths.py` uses `/workspace/data`
+when a writable `/workspace` mount exists, otherwise **`F:/techjam`**. On
+macOS/Linux that Windows default is almost certainly wrong — export
+`SEER_DATA_ROOT` before fetching or training. Paths below are written as
+`$SEER_DATA_ROOT/<name>`.
+
+The mixture is largely **non-commercial** (Community Forensics is
+CC BY-NC-SA 4.0; OpenFake's proprietary-generator subsets are
+non-commercial). This repo is a research/hackathon artifact accordingly.
 
 ## How sampling works
 
@@ -24,8 +32,8 @@ of the run (logged as `[data] dropping <name>`). That is how unwired
 GAS-Station listings and still-empty real folders fail open.
 
 Labels after mapping: **0 = real**, **1 = fake**. Composite overlays (60% of
-fake samples, tilted toward fake-on-real / real-on-fake) can change the
-page/patch labels on top of this mix; they are not a separate source.
+fake samples; FoR/RoF/FoF/RoR quota-equal, page labels stay 1:1) can change
+the page/patch labels on top of this mix; they are not a separate source.
 
 ## Train sources
 
@@ -170,13 +178,14 @@ seen. Streamed sources can draw past the local slice.
   column, and deletes each shard before pulling the next. Peak footprint is
   one 5.4 GB shard plus the JPEGs kept.
 - **Which generators, and why.** Breadth is not the point here; the mixture
-  already has 4,803 generators from `comfor`. This source exists to close a
-  measured hole. The pipeline is:
+  already has **4,782** counted generators from `comfor` (the registry / code
+  comments still quote 4,803 — the Community Forensics paper figure). This
+  source exists to close a measured hole. The pipeline is:
 
   ```bash
   uv run scripts/openfake.py probe --shards 3          # per-generator sample
   uv run scripts/openfake_rank.py --checkpoint runs/seer_vitl/best.pt
-  uv run scripts/openfake.py fetch --from-rank /workspace/data/openfake/rank.json \
+  uv run scripts/openfake.py fetch --from-rank $SEER_DATA_ROOT/openfake/rank.json \
       --labels fake real --tier 0.70=25000 0.95=15000 0.98=10000 \
       --cap-model pexels=80000 laion=50000
   ```
@@ -242,7 +251,7 @@ seen. Streamed sources can draw past the local slice.
   on *real* images, so training on noise-as-fake is contradictory
   supervision. Rerun `fetch` with `--exclude` to change that set.
 - Reals are OpenFake's LAION (ReLAION-5B, filtered to newsworthy/political)
-  and Pexels (clean professional stock). Worth their 19% of real mass: the
+  and Pexels (clean professional stock). Worth their 18% of real mass: the
   same checkpoint that sits at 0.7% FPR on our own val scored **6–9% FPR**
   on these, so they are a genuinely unseen real distribution, not padding.
 - PNGs and oversized / non-RGB rows are re-encoded to JPEG q95 with the
@@ -338,15 +347,18 @@ MIRAGE `source` codes (not generator names): T2I 3,391, RMG 2,499, IID
 These exist in `src/seer/datasets_registry.py` / `get_datasets.py` but are
 **not** `data.sources` entries:
 
-- **DDA-Training-Set** — COCO VAE reconstructions; 11-part zip.
-- **Synthbuster** — eval / optional folders source, not wired.
+- **DDA-Training-Set** — COCO VAE reconstructions; 11-part zip. `get_datasets.py`
+  still prints `python src/scripts/build_dda_pairs.py`; that script is **not**
+  in the repo. Do not use DDA for the hero mix.
+- **Synthbuster** — eval / optional `--dataset folders` source, not a
+  `--dataset synthbuster` name. Fetch with `scripts/download_synthbuster.py`.
 - **WildFake DALL-E** — ModelScope; organisers' fake reference half.
 - **CIFAKE** — 32×32 smoke test only. Never train a deployable detector on it.
 
 ## Acquisition cheat sheet
 
 ```bash
-export SEER_DATA_ROOT=/workspace/data   # or F:/techjam
+export SEER_DATA_ROOT=/path/to/data   # required on macOS/Linux; else F:/techjam (or /workspace/data)
 
 python get_datasets.py --list
 python get_datasets.py --only ntire-train ntire-val ntire-test coco-val2017
@@ -364,16 +376,16 @@ uv run scripts/download_open_images.py --workers 32 --max-gb 70
 # OpenFake: rank first, then fetch only the generators that are still holes
 uv run scripts/openfake.py probe --shards 3
 uv run scripts/openfake_rank.py --checkpoint runs/seer_vitl/best.pt
-uv run scripts/openfake.py fetch --from-rank /workspace/data/openfake/rank.json \
+uv run scripts/openfake.py fetch --from-rank $SEER_DATA_ROOT/openfake/rank.json \
     --labels fake real --tier 0.70=25000 0.95=15000 0.98=10000 \
     --cap-model pexels=80000 laion=50000
 uv run scripts/openfake.py holdout --config core     # eval only
 uv run scripts/openfake.py holdout --config reddit   # eval only
 ```
 
-`openfake.py` and `openfake_rank.py` both keep their worker counts low on
-purpose: this container's cgroup allows ~13.6 CPUs, and they are meant to run
-*alongside* a training job rather than instead of one.
+`openfake.py` and `openfake_rank.py` keep their worker counts low on
+purpose: they are meant to run *alongside* a training job rather than
+instead of one.
 
 Inspect remote metadata without pulling images: `python dataset_stats.py`.
 Edit weights only in the two yaml configs above; keep them in lockstep.

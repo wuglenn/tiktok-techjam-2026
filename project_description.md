@@ -12,8 +12,8 @@ image-level verdict, one logit per 16×16 patch for a spatial heatmap.
 | Parameters | **305,233,922** (~305M) — **15.3% of the 2B budget**, 6.5× headroom |
 | Input | 512×512 RGB, 32×32 patch grid |
 | Outputs | `P(AI)` ∈ [0, 1] + a 1,024-cell AI heatmap |
-| Held-out accuracy | **97.12%** on OpenFake `core/test` (89,225 unseen images, unseen generators *and* unseen real sources) |
-| False positive rate | **0.10%** on COCO val2017, **0.18%** on CommunityForensics-Eval, **0.21%** on OpenFake core reals |
+| Held-out accuracy | **97.27%** on OpenFake `core/test` (89,225 unseen images, unseen generators *and* unseen real sources) — step 33,500 |
+| False positive rate | **0.06%** on COCO val2017, **0.19%** on CommunityForensics-Eval, **0.17%** on OpenFake core reals |
 
 ---
 
@@ -58,7 +58,8 @@ already-saturated ones. `nano-banana` came in at 0.20 recall, `qwen-image` at
 `sd-turbo` was deliberately left out.
 
 The result is visible in the eval: on OpenFake `core/test` — 20 generators
-that are *not in the mixture at all* — recall is 94.58% at a 0.21% FPR.
+that are *not in the mixture at all* — recall is 94.72% at a 0.17% FPR
+(step 33,500).
 
 ### 1.2 Robustness to real-world transforms
 
@@ -68,10 +69,11 @@ run through a messaging app. The augmentation pipeline
 both classes** — critically, to reals too, so the model cannot learn
 "compressed ⇒ fake."
 
-Benchmark-level laundering is always in-distribution: JPEG q∈{90,70,50,30,20,10,5},
-WebP, Gaussian blur σ∈{0.5,1,2,4}, resize 0.5×/0.25×/0.125×, Gaussian noise
-σ∈{0.02,0.05,0.10,0.20}, colour jitter ±20%, centre crop 80%, grayscale,
-hflip. On top of that sits a stack of 1–4 harder ops drawn per sample:
+Eval `--perturbation all` stays JPEG q∈{90,70,50,30}, blur σ∈{0.5,1,2},
+resize 0.5×/0.25×, noise σ∈{0.02,0.05,0.10}, jitter ±20%, crop 80%, plus
+clean. Train is intentionally harder: the hero YAML adds JPEG q∈{20,10,5},
+blur σ=4, resize 0.125×, noise 0.20, jitter ±35%, WebP, grayscale, hflip,
+and a stack of 1–4 harder ops drawn per sample:
 double-JPEG, 4:2:0 chroma subsampling, "social re-encode" (messenger-style
 chroma + JPEG/WebP), **8×8 DCT grid shift** (defeats detectors keyed to JPEG
 block alignment), mismatched resample kernels (nearest-down/bicubic-up),
@@ -79,24 +81,26 @@ motion blur, sub-pixel nudge, FFT low-pass, FFT high-frequency phase noise,
 chromatic aberration, film grain, surface blur, vignette, perspective
 recapture, speckle, and a JPEG→WebP→JPEG recode stack.
 
-The eval harness then scores the *official* 16-level table
-(`--perturbation all`) plus 36 harder NTIRE-style levels (`--perturbation
-extra`) as a separate protocol, so the robustness number is never an artifact
-of testing on exactly the augmentation seen in training.
+The eval harness then scores the official 15-level table including clean
+(`--perturbation all`: JPEG 90/70/50/30, blur 0.5/1/2, resize 0.5×/0.25×,
+noise 0.02/0.05/0.10, jitter ±20%, crop 80%) plus the harder NTIRE-style
+table (`--perturbation extra`) as a separate protocol, so the robustness
+number is never an artifact of testing on exactly the augmentation seen
+in training.
 
 ### 1.3 Low false-positive rate on genuine photographs
 
 A detector that flags real photos is unshippable regardless of its recall.
-Real mass therefore comes from four genuinely different distributions —
-LAION-400M web crawl, Open Images V7, Community Forensics' COCO/FFHQ/
-LandscapesHQ/VISION pools, and NTIRE's resolution/aspect/JPEG-quality-matched
-reals — and the held-out FPR sets (COCO val2017, DOCCI, ImageNet, WikiArt)
-are never seen in training. The loader hard-refuses any path under a
-held-out marker.
+Real mass therefore comes from five genuinely different distributions —
+NTIRE's resolution/aspect/JPEG-quality-matched reals, Community Forensics'
+COCO/FFHQ/LandscapesHQ/VISION pools, `jp1924/Laion400m-1` web-crawl photos,
+OpenFake's Pexels + ReLAION reals, and Open Images V7 — and the held-out
+FPR sets (COCO val2017, DOCCI, ImageNet, WikiArt) are never seen in
+training. The loader hard-refuses any path under a held-out marker.
 
-Measured: **0.10% FPR on 5,000 COCO val2017 photographs** (5 false
-positives), 0.18% on CommunityForensics-Eval, 0.21% on 43,528 OpenFake reals it has never
-seen.
+Measured at step 33,500: **0.06% FPR on 5,000 COCO val2017 photographs**
+(3 false positives), 0.19% on CommunityForensics-Eval, 0.17% on 43,528
+OpenFake reals it has never seen.
 
 ### 1.4 Interpretability and mixed real/AI images
 
@@ -132,9 +136,9 @@ uv run python predict.py --image-dir ./images --checkpoint best.pt --out preds.j
 ]
 ```
 
-`pred` is the calibrated sigmoid probability that the image is AIGC. It is a
-score, not a decision — the operating threshold is the caller's choice, and
-0.5 is only the default we report metrics at.
+`pred` is the sigmoid P(AI-generated) in [0, 1]. It is a score, not a
+calibrated probability or a hard decision — the operating threshold is the
+caller's choice, and 0.5 is only the default we report metrics at.
 
 ---
 
@@ -146,10 +150,8 @@ score, not a decision — the operating threshold is the caller's choice, and
 | **uv** (Astral) | Python 3.10 env + dependency resolution; `pyproject.toml` + `uv.lock`, torch pinned to the `cu124` index |
 | **RunPod** | training and full-scale eval — A100/H100-class for the hero run, RTX 4090 24 GB for the held-out suite; `/workspace` network volume for the ~2.5M-image mixture |
 | **Git + GitHub** | version control |
-| **pytest** | 8 offline test modules (`tests/`) that exercise the model, probe, optimizer, label mapping, and dataset adapters with a random tiny backbone — no network, no GPU |
 | **Hugging Face Hub CLI** | gated-dataset auth (`hf auth login`) and shard fetching |
-| **HTTP range requests** (`eval_openfake/hfio.py`) | streaming individual parquet row-groups straight out of the Hub so a 67 GB eval split never lands on disk |
-| **Next.js dev server** | the `client/` dashboard — live demo, robustness summary, error analysis, and the built-with inventory |
+| **Next.js dev server** | the `client/` dashboard (`/` / `/analyze` / `/robustness` / `/errors`) — live demo when a checkpoint is loaded via `seer_serve.py` on :8765 |
 | **matplotlib** | heatmap panels, error-analysis figures, robustness charts |
 | **PowerShell / bash** | local (Windows) and remote (Linux pod) shells |
 
@@ -203,7 +205,6 @@ Attention kernels are resolved at load time with graceful degradation:
 | **matplotlib** | ≥3.8 | heatmap overlays, error panels, robustness figures |
 | **PyYAML** | ≥6 | config files with dotted `--set` overrides |
 | **tqdm** | ≥4.66 | progress on long eval sweeps |
-| **pytest** | ≥8 | offline test suite |
 | **pyarrow** | via `datasets` | parquet footers, row-group-level reads |
 | *(optional `gen` group)* | | `diffusers`, `accelerate`, `sentencepiece`, `protobuf` — only for `scripts/generate_mirrors.py` synthetic mirroring |
 
@@ -215,7 +216,7 @@ needed to be reproducible from a seeded `random.Random` per sample.
 
 Custom implementations rather than dependencies:
 
-- **Muon optimizer** (`src/seer/optim.py`) — Newton–Schulz-orthogonalized momentum on 2D weights, AdamW on everything else. Used by the probe recipe.
+- **Muon optimizer** (`src/seer/optim.py`) — Newton–Schulz-orthogonalized momentum on 2D weights, AdamW on everything else. The dataclass default `TrainConfig.optimizer` is **muon**; the hero YAML (`seer_vitl_512.yaml`) overrides that to **adamw**. The probe recipe keeps Muon on 2D head weights.
 - **EMA**, layer-wise LR decay param groups, cosine-with-warmup schedule.
 - **Threaded prefetcher + decode pool** (`BatchBuilder`) — profiled with `scripts/bench_loader.py`; 8 decode threads roughly double collate throughput and are what keep an A100 fed.
 
@@ -229,10 +230,12 @@ Custom implementations rather than dependencies:
 | **Tailwind CSS 4** | styling, via `@tailwindcss/postcss` |
 | **Geist** | typeface |
 
-The dashboard's `/api/analyze` route spawns the real Python model through
-`client/scripts/seer_infer.py` (via `uv`, falling back to the repo `.venv`)
-when a checkpoint is present, and clearly labels simulated output when one is
-not.
+The dashboard's `/api/analyze` route prefers the persistent server
+`client/scripts/seer_serve.py` on `http://127.0.0.1:8765`
+(`SEER_INFER_URL`). If nothing is listening it falls back to spawning
+`client/scripts/seer_infer.py` (`$SEER_PYTHON`, else `uv`, else the repo
+`.venv`) when a checkpoint is present, and clearly labels **SIMULATED**
+output when one is not. There is no `tests/` tree in this checkout.
 
 ---
 
@@ -281,11 +284,19 @@ leak into training by a config mistake.
 
 ### Generated assets in this repo
 
-- `best.pt` — trained checkpoint (model + EMA + optimizer state, ~4.9 GB).
-- `eval_openfake/out/full_core_test/` — the full 91,398-image OpenFake sweep: `rows.jsonl` (per-image score), `aggregate.json` (metrics + per-generator + per-real-source), 48 error-panel PNGs.
-- `eval_openfake/out/panels/` — 10 curated 4-row comparison panels.
-- `docs/deliverables/heldout-eval-step27500.md` — the full held-out suite.
-- Heatmap PNGs rendered by `src/seer/heatmap.py` (matplotlib, `turbo` colormap at 0.55 alpha).
+- Weights are **not in git** (`*.pt` is gitignored). A TechJam `best.pt` is
+  ~5 GB (model + EMA + optimizer). There is no download URL — place a
+  checkpoint you were given, or train one. Discovery:
+  `$SEER_CHECKPOINT` → repo-root `best.pt` → newest `runs/*/best.pt`.
+- [`eval/eval_step33500/`](eval/eval_step33500/) — committed held-out
+  suite at step 33,500 (`summary.json`, per-set JSONs, `run_suite.py`,
+  plus a small WildFake DALL-E FN dump under `errors_dalle_advanced/`).
+- [`docs/deliverables/heldout-eval-step27500.md`](docs/deliverables/heldout-eval-step27500.md)
+  — earlier writeup of the same recipe at step 27,500 (metrics only; the
+  pod-side JSON folder is not in this checkout).
+- Heatmap PNGs rendered by `src/seer/heatmap.py` (matplotlib, `turbo`
+  colormap at 0.55 alpha). The local / patch head is on both the hero
+  checkpoint and `configs/seer_probe.yaml`.
 
 ### Licences
 
@@ -299,89 +310,90 @@ ships code, configs, metrics, and heatmaps of publicly licensed datasets.
 
 ## 6. Results
 
-Two checkpoints appear in this repo. Numbers are always tagged with the one
-that produced them.
+Numbers below are from the committed suite at **step 33,500**
+(`runs/seer_vitl/last.pt`, clean protocol, threshold 0.5):
+[`eval/eval_step33500/`](eval/eval_step33500/). An earlier writeup of the
+same recipe at step 27,500 lives at
+[`docs/deliverables/heldout-eval-step27500.md`](docs/deliverables/heldout-eval-step27500.md).
+`best.pt` is a different snapshot — it follows balanced accuracy on the
+*train-distribution* val slice, which saturates early, so it is not the
+checkpoint behind these held-out numbers. Weights are not in git.
 
-- **step 27,500** (`runs/seer_vitl/last.pt`, EMA) — the strongest snapshot; the full held-out suite below. Details: [`docs/deliverables/heldout-eval-step27500.md`](docs/deliverables/heldout-eval-step27500.md).
-- **step 4,000** (`best.pt`, EMA) — the earlier snapshot that is checked out locally and that scored the **full** OpenFake `core/test` split image-by-image (all 91,398 rows, 67.6 GB streamed, 4.7 h). `best.pt` tracks balanced accuracy on the *train-distribution* val slice, which saturates at ~98.1% early, so it is not the best held-out checkpoint — a known and documented consequence of that selection rule.
-
-### Held-out suite — step 27,500, clean protocol, threshold 0.5
-
-194,361 images, 43 min on one RTX 4090.
+### Held-out suite — step 33,500, clean protocol, threshold 0.5
 
 | Set | n (fake / real) | Macro acc | mAP | AUROC | Precision | Recall | FPR |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| CommunityForensics-Eval | 51,836 (25,918 / 25,918) | **95.65%** | 99.62% | 99.54% | 99.80% | 91.48% | **0.18%** |
-| OpenFake `core/test` | 89,225 (45,697 / 43,528) | **97.19%** | 99.84% | 99.81% | 99.79% | 94.58% | **0.21%** |
-| OpenFake `reddit/test` | 36,227 (29,116 / 7,111) | 89.05% | 99.28% | 97.28% | 99.38% | 80.16% | 2.05% |
-| MIRAGE | 12,073 (10,682 / 1,391) | 86.26% | 99.02% | 93.02% | 99.08% | 78.06% | 5.54% |
-| COCO val2017 (reals only) | 5,000 (0 / 5,000) | — | — | — | — | — | **0.10%** |
+| CommunityForensics-Eval | 51,836 (25,918 / 25,918) | **95.79%** | **99.65%** | 99.60% | 99.79% | 91.78% | **0.19%** |
+| OpenFake `core/test` | 89,225 (45,697 / 43,528) | **97.27%** | 99.86% | 99.84% | 99.83% | 94.72% | **0.17%** |
+| OpenFake `reddit/test` | 36,227 (29,116 / 7,111) | 88.80% | 99.19% | 96.91% | 99.36% | 79.70% | 2.11% |
+| MIRAGE | 12,073 (10,682 / 1,391) | 86.47% | 99.07% | 93.34% | 99.18% | 77.90% | 4.96% |
+| COCO val2017 (reals only) | 5,000 (0 / 5,000) | — | — | — | — | — | **0.06%** |
+| NTIRE 2026 public test | 2,500 (1,300 / 1,200) | 91.23% | 95.69% | 96.77% | 93.33% | 89.38% | 6.92% |
 
 Pangram Image — the commercial state of the art — reports 97.29% / 99.70%
-(macro accuracy / mAP) on CommunityForensics-Eval. Seer is **1.64 points of macro accuracy
-and 0.08 points of mAP behind it at 15% of the parameter budget and on
-entirely public data**, with a lower FPR. Essentially the whole gap is false
-negatives, concentrated on pixel-space diffusion and a handful of stylized
-commercial generators.
+(macro accuracy / mAP) on CommunityForensics-Eval. Seer is **1.50 points of
+macro accuracy and 0.05 points of mAP behind it at 15.3% of the parameter
+budget and on entirely public data**, with a lower FPR. Essentially the
+whole gap is false negatives, concentrated on pixel-space diffusion and a
+handful of stylized commercial generators.
+
+Default `main.py eval` on OpenFake caps at 4,096 images
+(`OPENFAKE_EVAL_MAX`); the committed OpenFake rows used `--max-samples 0`.
 
 ### Robustness — clean vs transformed (NTIRE public test, 2,500 images)
 
+From the same step-33,500 JSON (`ntire_test.json`):
+
 | Checkpoint | Clean acc | Distorted acc | Δ | Robust AUROC | Overall macro acc | mAP |
 |---|---:|---:|---:|---:|---:|---:|
-| step 4,000 | 93.58% | 78.88% | −14.70 | 86.99% | 86.23% | 93.90% |
-| **step 26,000** | **97.50%** | **84.45%** | **−13.05** | **91.55%** | **90.97%** | **95.49%** |
+| **step 33,500** | **97.68%** | **84.64%** | **−13.04** | **92.28%** | **91.23%** | **95.69%** |
 
 Distortion costs ~13 points of accuracy on the hardest public robustness
-split while ranking quality holds (robust AUROC 91.55%) — i.e. the ordering
+split while ranking quality holds (robust AUROC 92.28%) — i.e. the ordering
 survives laundering better than the fixed 0.5 threshold does, which is the
 signal that a threshold sweep is the cheapest remaining win.
 
-### Error analysis — full OpenFake `core/test`, step 4,000, all 91,398 images
+### Error analysis — OpenFake `core/test`, step 33,500 (89,225 on-disk holdout)
 
-Overall: 94.96% balanced accuracy, **99.13% AUROC**, **99.33% mAP**, 90.33%
-recall at **0.40% FPR**.
+Overall: **97.27%** macro acc, **99.84% AUROC**, **99.86% mAP**, 94.72%
+recall at **0.17% FPR**.
 
-**False negatives are structural, not random.** 4,421 misses, median
-P(AI) = 0.134 — most sit *just* under the threshold, and only 11.2% fall
-below 0.01. Concentrated on stylized/illustrative generators:
+**False negatives are structural, not random.** Concentrated on
+stylized / illustrative generators:
 
 | Weakest | Recall | | Strongest | Recall |
 |---|---:|---|---|---:|
-| `recraft-v3` (n=1,000) | 71.4% | | `illustrious` (n=6,694) | 99.75% |
-| `flux.2-klein-9b` (n=8,249) | 77.5% | | `seedream-v5.0` (n=372) | 99.73% |
-| `halfmoon-4-4-25` (n=190) | 77.4% | | `lumina-17-2-25` (n=543) | 99.63% |
-| `ideogram-2.0` (n=282) | 86.2% | | `ernie-image-turbo` (n=687) | 99.13% |
-| `midjourney-7` (n=3,586) | 86.3% | | `gpt-image-1.5` (n=5,573) | 97.83% |
+| `recraft-v3` (n=1,000) | 59.20% | | `illustrious` (n=6,694) | 99.79% |
+| `halfmoon-4-4-25` (n=190) | 71.05% | | `seedream-v5.0` (n=372) | 99.73% |
+| `ideogram-2.0` (n=282) | 75.89% | | `lumina-17-2-25` (n=543) | 99.63% |
+| `frames-23-1-25` (n=250) | 78.00% | | `ernie-image-turbo` (n=687) | 99.42% |
+| `midjourney-7` (n=3,586) | 84.91% | | `gpt-image-1.5` (n=5,573) | 98.55% |
 
-By step 27,500 `flux.2-klein-9b` recovers to 97.36% and `gpt-image-1.5` to
-98.37%, while `recraft-v3` stays the hole at 56.90% — so the remaining
-weakness is a specific stylistic family, not frontier capability.
+`flux.2-klein-9b` is at 97.72%. The remaining hole is a stylistic family
+(Recraft / Halfmoon / Frames / Ideogram), not frontier capability.
 
-**False positives are rare and legible.** 181 of 45,699 reals: 109/14,847
-DOCCI (0.73%) and 72/30,852 ImageNet (0.23%). Mean P(AI) on reals is 0.027
-and 0.012 respectively — the real distribution sits hard against zero rather
-than spreading toward the threshold.
+**False positives are rare.** On the held-out reals: DOCCI 0.37% FPR
+(14,847) and ImageNet 0.06% FPR (28,681). Combined FPR is 0.17%.
 
-**The trade-off we chose.** Precision is 99.56% and FPR is 0.40%; recall is
-90.33%. The model is deliberately biased toward never accusing a real
-photograph, which costs recall on borderline fakes. For a platform-scale
-deployment that is the right side to err on, and because mAP is 99.33% the
-ranking is good enough that a different operating point is one threshold away
-— no retraining needed. The 48 error panels in
-`eval_openfake/out/full_core_test/heatmaps/` show each of these cases with
-its patch heatmap, so the failures are inspectable rather than aggregate.
+**The trade-off we chose.** Precision is 99.83% and FPR is 0.17%; recall
+is 94.72%. The model is deliberately biased toward never accusing a real
+photograph, which costs recall on borderline fakes. Ranking is good
+enough (mAP 99.86%) that a different operating point is one threshold
+away — no retraining needed. The dashboard `/errors` page and
+`main.py eval --error-dir` render each mistake with its patch heatmap.
 
 ---
 
 ## 7. Limitations and what we would improve
 
-- **`best.pt` selection rule.** It follows balanced accuracy on the train-distribution val slice, which saturates early — so the locally checked-out `best.pt` is step 4,000 while step 27,500 is materially better on every held-out set. Selecting on a held-out set (or a composite of NTIRE test + OpenFake test) is a one-line fix we would make first.
-- **Fixed 0.5 threshold.** mAP stays ≥99% where accuracy drops 15+ points, meaning most of the loss is threshold placement, not ranking. A per-deployment threshold sweep on `openfake_reddit` is the highest-value next step.
-- **Stylized / illustrative generators.** Recraft v3 (56.9% recall at step 27,500), Halfmoon, Frames, Ideogram 2 — non-photographic aesthetics remain the blind spot. Fixing it is a data problem: rank and fetch those families the way we ranked OpenFake.
-- **Image editing and face swap.** MIRAGE's inpainting / IP-OP / face-swap slices score 39–45%. The patch head is architecturally the right tool but was never trained on real inpainting data, only on synthetic composites.
+- **`best.pt` selection rule.** It follows balanced accuracy on the train-distribution val slice, which saturates early. The stronger held-out snapshots are later `last.pt` steps (27,500 writeup, 33,500 committed suite). Selecting on a held-out set (or a composite of NTIRE test + OpenFake test) is a one-line fix we would make first.
+- **Fixed 0.5 threshold.** mAP stays ≥99% on the large held-out sets where in-the-wild accuracy is lower, meaning much of the remaining loss is threshold placement, not ranking. A per-deployment threshold sweep on `openfake_reddit` is the highest-value next step.
+- **Stylized / illustrative generators.** Recraft v3 (59.20% recall at step 33,500), Halfmoon, Frames, Ideogram 2 — non-photographic aesthetics remain the blind spot. Fixing it is a data problem: rank and fetch those families the way we ranked OpenFake.
+- **Image editing and face swap.** MIRAGE's inpainting / IP-OP / face-swap slices score 39–45% at the 27,500 writeup. The patch head is architecturally the right tool but was never trained on real inpainting data, only on synthetic composites.
 - **Frontier API coverage.** GPT Image, Nano Banana, Grok, Riverflow are API-gated; the public mixture covers those *families* rather than the exact latest endpoints.
-- **Training budget.** The hero recipe is 60,000 steps; the numbers above are from step 27,500 — under half. The curves had not flattened.
+- **Training budget.** The hero recipe is 60,000 steps (batch 56 × 3 accum, effective 168); the committed numbers are from step 33,500 — just over halfway. The curves had not flattened.
 - **Compute cost.** ViT-L at 512px is ~10 img/s on a 12 GB GPU. A distilled ViT-S/B student trained on the ViT-L's patch logits would be the obvious deployment path.
+- **No tests, CI, licence file, or demo video in this checkout.** `pytest` is an optional `dev` extra in `pyproject.toml`; there is no `tests/` tree.
 
 ---
 
@@ -389,8 +401,9 @@ its patch heatmap, so the failures are inspectable rather than aggregate.
 
 ```
 main.py                  CLI: train | eval | infer | info
-predict.py               DELIVERABLE: image directory -> {image_path, pred} JSON
-configs/                 seer_vitl_512 (hero) | seer_vitl_local | seer_probe | seer_vits_debug
+predict.py               Track 5 entry: image directory -> {image_path, pred} JSON
+configs/                 seer_vitl_512 (hero mix) | seer_probe (same mix; patch head on)
+                         seer_vitl_local (single CF stream) | seer_vits_debug (DINOv2-S @ 224)
 src/seer/
   model.py               SeerDetector, dual heads, EMA, param groups, checkpoint I/O
   train.py               continuation-training loop, cosine+warmup, LLRD, bf16
@@ -400,9 +413,9 @@ src/seer/
   heatmap.py             patch logits -> overlay panels
   infer.py, optim.py, config.py, labels.py, paths.py, datasets_registry.py
 scripts/                 dataset acquisition, OpenFake ranking, loader benchmarks
-eval_openfake/           streaming full-split OpenFake harness (HTTP range reads)
-tests/                   8 offline pytest modules
-client/                  Next.js live dashboard (analyze / robustness / errors)
+get_datasets.py          --list / --tier / --only acquisition plan
+eval/eval_step33500/     committed held-out JSONs + run_suite.py
+client/                  Next.js dashboard (/ /analyze /robustness /errors)
 docs/                    DATA_MIXTURE.md, DELIVERABLES.md, held-out eval report
 ```
 

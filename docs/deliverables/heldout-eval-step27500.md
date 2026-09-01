@@ -1,22 +1,18 @@
 # Held-out eval — `seer_vitl` step 27,500
 
-Clean-protocol scores for the latest `runs/seer_vitl` snapshot
-(`last.pt`, step **27,500**). NTIRE val / val-hard / public test were
-skipped: those already run inside the training loop. Everything else on
-disk under `/workspace/data` that the harness treats as eval is here.
+This is a **step 27,500** writeup. The committed, inspectable suite in
+this checkout is later: [`eval/eval_step33500/`](../../eval/eval_step33500/)
+(step **33,500**). Do not quote these rows as current.
 
-Raw JSON + the suite log live next to the checkpoint:
+Clean-protocol scores for `runs/seer_vitl/last.pt` at step 27,500. NTIRE
+val / val-hard / public test were skipped on this pass: those already
+ran inside the training loop. Everything else on disk under
+`/workspace/data` that the harness treats as eval is here.
 
-```
-runs/seer_vitl/eval_step27000/
-  summary.json
-  comfor_eval.json
-  openfake_test.json
-  openfake_reddit.json
-  mirage.json
-  coco_val2017.json
-  suite.log
-```
+Raw JSON + the suite log lived next to the training checkpoint on the
+pod (`runs/seer_vitl/eval_step27000/`). That folder is **not** in this
+repo. The in-repo runner for the later snapshot is
+`eval/eval_step33500/run_suite.py`.
 
 ## Setup
 
@@ -178,9 +174,10 @@ Full-image synthesis is largely solved: T2I / RMG / PCRMG — 6,455 of the
 10,682 fakes — recall at 91–99%. The hole is local edits: instruction
 editing, inpainting/outpainting, face swap, try-on and background change
 (IE / IP/OP / FS / TR / CB) sit at 39–54%, exactly the composite-like
-edits the patch head is supposed to catch, but this pass is page-level
-only. FPR lives on the two human-curated mixed slices — IID 4.39%,
-OOD-R 7.08%.
+edits the patch head is supposed to catch. The hero checkpoint has that
+patch head (heatmaps work); this writeup is metrics-only — no
+`--error-dir` dump was kept next to these JSONs. FPR lives on the two
+human-curated mixed slices — IID 4.39%, OOD-R 7.08%.
 
 ## COCO val2017 (FPR-only)
 
@@ -200,11 +197,11 @@ triggering on ordinary photographs.
 
 ## What this does *not* include
 
-- **NTIRE val / val-hard / public test.** Last train-loop print at step
-  26,000: `ntire_test` n=2,500, macro acc 90.97%, F1 91.12%, AUROC 96.47%,
-  mAP 95.49%, clean 97.50%, distorted 84.45%, robust AUROC 91.55%. Re-run
-  with `--dataset ntire_test` (and `ntire_val` / `ntire_val_hard`) if a
-  frozen snapshot of those splits is needed next to this suite.
+- **NTIRE val / val-hard / public test** on *this* 27,500 pass. Last
+  train-loop print at step 26,000: `ntire_test` n=2,500, macro acc 90.97%,
+  F1 91.12%, AUROC 96.47%, mAP 95.49%, clean 97.50%, distorted 84.45%,
+  robust AUROC 91.55%. The committed step-33,500 suite *does* include
+  `ntire_test` (`eval/eval_step33500/ntire_test.json`).
 - Pangram **augmented** protocol (`--augmented`) and the
   `--perturbation all` robustness table.
 - Synthbuster + RAISE, WikiArt, WildFake DALL·E — not on this volume.
@@ -238,9 +235,12 @@ uv run python main.py eval --checkpoint runs/seer_vitl/last.pt \
     --dataset folders --real-dir /workspace/data/coco-val2017 --batch-size 32 \
     --out-json runs/seer_vitl/eval_step27000/coco_val2017.json
 
-# or the one-load suite that produced these numbers
-uv run python runs/seer_vitl/eval_step27000/run_suite.py
 ```
+
+The one-load runner that produced *these* numbers lived on the pod at
+`runs/seer_vitl/eval_step27000/run_suite.py` and is not in this checkout.
+The in-repo runner scores the later snapshot:
+`uv run python eval/eval_step33500/run_suite.py`.
 
 `--max-samples 0` on the OpenFake splits disables the 4,096-image
 train-loop cap and scores the full holdout. CommunityForensics-Eval and MIRAGE read the
