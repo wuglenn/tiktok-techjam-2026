@@ -13,6 +13,59 @@ Mixture, licences, and fetch commands: [`docs/DATA_MIXTURE.md`](docs/DATA_MIXTUR
 [Limitations and next steps](#limitations-and-next-steps) ·
 [Team member contributions](#team-member-contributions)
 
+**Score images now:** [Quick start](#quick-start-score-a-folder-of-images) · [`predict.py`](predict.py) · [weights](https://huggingface.co/glennwuwu/seer)
+
+---
+
+## Quick start: score a folder of images
+
+The official Track 5 scoring script is repo-root [`predict.py`](predict.py).
+It walks an image directory and writes a JSON array of `{image_path, pred}`,
+where `pred` is **P(AI-generated) ∈ [0, 1]**.
+
+Weights live on Hugging Face: **[glennwuwu/seer](https://huggingface.co/glennwuwu/seer)**
+(`best.pt`, ~4.9 GB). The first run downloads them automatically.
+
+```bash
+# 1. install (needs [uv](https://docs.astral.sh/uv/) and Python ≥ 3.10)
+uv sync
+
+# 2. score every image in a directory (or pass a single image path)
+uv run python predict.py --image-dir ./images --out preds.json
+```
+
+That is the whole getting-started path. No extra Hub login is required for
+scoring: the architecture config is bundled, and the fine-tuned weights come
+from `glennwuwu/seer`. Later runs reuse the Hugging Face cache, a repo-root
+`best.pt`, or `$SEER_CHECKPOINT` if you set one.
+
+```json
+[
+  {"image_path": "images/photo_001.jpg", "pred": 0.0031},
+  {"image_path": "images/render_014.png", "pred": 0.9994}
+]
+```
+
+`pred` is a score, not a hard decision. Metrics in this repo are reported at
+threshold 0.5. JPEG / PNG / WebP / BMP / TIFF / GIF are scanned recursively.
+
+| Flag | Default | What it does |
+|---|---|---|
+| `--image-dir` | required | directory of images, or a single image |
+| `--out` | `predictions.json` | official `{image_path, pred}` JSON |
+| `--checkpoint` | auto | local `.pt`, else download [glennwuwu/seer](https://huggingface.co/glennwuwu/seer) |
+| `--device` | cuda if available | `cuda` or `cpu` |
+| `--batch-size` | 16 | inference batch |
+| `--no-recursive` | off | do not descend into subdirectories |
+| `--limit` | 0 (all) | score only the first N images |
+| `--heatmap-dir` | off | per-patch AI heatmap PNG next to every verdict |
+| `--out-detailed` | off | richer JSON (label, size, heatmap path, run metadata) |
+| `--resume` | off | continue an interrupted directory run |
+
+CPU example: `uv run python predict.py --image-dir ./images --device cpu`.
+`uv sync` pins the CUDA 12.4 torch wheel; see [Setup](#setup-and-installation)
+if that install does not match your machine.
+
 ---
 
 ## Project overview
@@ -78,7 +131,9 @@ uv sync
 # optional, only for scripts/generate_mirrors.py:
 uv sync --group gen
 
-# 2. Hugging Face auth — DINOv3 and jp1924/Laion400m-1 are gated
+# 2. Hugging Face auth — only for *training / data fetch*
+#    (DINOv3 and jp1924/Laion400m-1 are gated). Scoring via predict.py
+#    does not need this: it downloads glennwuwu/seer automatically.
 hf auth login          # or: export HF_TOKEN=...
 
 # 3. data root (required on macOS/Linux)
@@ -102,11 +157,13 @@ uv run python main.py train --config configs/seer_vitl_512.yaml --set backbone=f
 ```
 
 **Weights are not in git** (`*.pt` is gitignored; a TechJam `best.pt` is
-~5 GB, model + EMA + optimizer). There is no download URL in this repo —
-place a checkpoint you were given, or train one (hero recipe under
-[Reproducing results](#reproducing-results)). Discovery used by the
-dashboard: `$SEER_CHECKPOINT`, then repo-root `best.pt`, then the newest
-`runs/*/best.pt` (preferring `seer_vitl*` runs).
+~4.9 GB, model + EMA + optimizer). The released scoring checkpoint is
+**[glennwuwu/seer](https://huggingface.co/glennwuwu/seer)**. `predict.py`
+downloads `best.pt` on the first run; you can also place it at the repo
+root or export `$SEER_CHECKPOINT`. Dashboard discovery: `$SEER_CHECKPOINT`,
+then repo-root `best.pt`, then the newest `runs/*/best.pt` (preferring
+`seer_vitl*` runs). Training from scratch is under
+[Reproducing results](#reproducing-results).
 
 **GPU / disk.** The hero recipe (`seer_vitl_512.yaml`) is an A100/H100-class
 run: batch 56 × 3 accum, ViT-L @ 512, no grad checkpointing. A single 12 GB
@@ -146,7 +203,13 @@ are already checked in as JSON — you do not need a GPU to *read* them.
 
 ### Scoring / inference (`predict.py`)
 
+See [Quick start](#quick-start-score-a-folder-of-images) for the one-command
+path. `--checkpoint` is optional: if you omit it (or pass `best.pt` and the
+file is missing), weights are fetched from
+[glennwuwu/seer](https://huggingface.co/glennwuwu/seer).
+
 ```bash
+uv run python predict.py --image-dir ./images --out preds.json
 uv run python predict.py --image-dir ./images --checkpoint best.pt --out preds.json
 ```
 
@@ -157,12 +220,12 @@ uv run python predict.py --image-dir ./images --checkpoint best.pt --out preds.j
 ]
 ```
 
-`--checkpoint` defaults to `best.pt`. Flags:
+Flags:
 
 | Flag | Default | What it does |
 |---|---|---|
 | `--image-dir` | required | directory of images, or a single image |
-| `--checkpoint` | `best.pt` | trained Seer checkpoint |
+| `--checkpoint` | auto (`glennwuwu/seer`) | trained Seer checkpoint |
 | `--out` | `predictions.json` | official `{image_path, pred}` JSON |
 | `--out-detailed` | off | richer JSON (label, size, heatmap path, run metadata) |
 | `--heatmap-dir` | off | per-patch AI heatmap PNG next to every verdict |
@@ -293,9 +356,12 @@ proprietary-generator subsets are non-commercial).
 
 ### Weights
 
-Not in git. You need `best.pt` [found on hugging face](https://huggingface.co/glennwuwu/seer) (or `$SEER_CHECKPOINT`) for `predict.py`
-and a live dashboard. The published table was scored from step-33,500
-`last.pt`.
+Not in git. The scoring checkpoint is
+**[glennwuwu/seer](https://huggingface.co/glennwuwu/seer)** (`best.pt`).
+`predict.py` downloads it automatically; you can also pass
+`--checkpoint /path/to/best.pt` or export `$SEER_CHECKPOINT`. A live
+dashboard uses the same file. The published table was scored from
+step-33,500 `last.pt`.
 
 ---
 
@@ -310,9 +376,10 @@ and a live dashboard. The published table was scored from step-33,500
   snapshots are later `last.pt` steps (27,500 writeup, 33,500 committed
   suite). The hero recipe is 60,000 steps; those numbers are from just
   over halfway, and the curves had not flattened.
-- **Weights are not released.** Without a checkpoint, the dashboard
-  `/analyze` path is **SIMULATED**. Judges cannot re-run `predict.py` or
-  live inference from git alone.
+- **Scoring weights are on Hugging Face, not in git.**
+  [`predict.py`](predict.py) downloads [glennwuwu/seer](https://huggingface.co/glennwuwu/seer)
+  on first use. Without a local or cached checkpoint, the dashboard
+  `/analyze` path is **SIMULATED**.
 - **CommunityForensics PNG⇒fake confound.** CF-Small shards are sorted by
   label, so container format is a shortcut unless JPEG/WebP
   wild-simulation runs on *both* classes. The corpus is also
@@ -356,9 +423,10 @@ and a live dashboard. The published table was scored from step-33,500
   face-swap), not only synthetic composites, then re-score those slices.
 - **Finish the 60k-step hero run** and keep evaluating past 33,500 —
   the curves were still moving.
-- **Ship a scoring-only checkpoint** (model + EMA, no optimizer) so
-  `predict.py` and the dashboard are runnable from a download, plus a
-  short end-to-end demo video.
+- **Ship a scoring-only checkpoint** (model + EMA, no optimizer) so the
+  Hub file is smaller than the current ~4.9 GB train blob, plus a short
+  end-to-end demo video. `predict.py` already downloads
+  [glennwuwu/seer](https://huggingface.co/glennwuwu/seer).
 - **Add a real `tests/` tree and CI** around `predict.py` JSON schema,
   path defaults, and a tiny offline backbone (`main.py info --backbone tiny`).
 - **Distill ViT-L → ViT-S/B** on the teacher's patch logits for a
@@ -538,7 +606,7 @@ uv run python main.py eval --checkpoint runs/seer_vitl/best.pt --dataset ntire_v
     --error-dir runs/eval/errors --error-n 6 --out-json runs/eval/ntire_val.json
 
 # 6. use it — official Track 5 entry, or a single-image heatmap
-uv run python predict.py --image-dir ./images --checkpoint best.pt --out preds.json
+uv run python predict.py --image-dir ./images --out preds.json   # downloads glennwuwu/seer if needed
 uv run python main.py infer --checkpoint runs/seer_vitl/best.pt \
   --image suspect.jpg --out-dir out/                                    # verdict + heatmap PNG
 

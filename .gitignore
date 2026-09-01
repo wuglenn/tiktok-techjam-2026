@@ -44,6 +44,11 @@ hf_cache/
 samples/
 out/
 
+# --- Inference outputs ---
+predictions.json
+preds.json
+*.progress.jsonl
+
 # --- Training runs (logs, heatmaps, checkpoints) ---
 runs/
 

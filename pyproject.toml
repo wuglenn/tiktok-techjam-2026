@@ -44,3 +44,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/seer"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/seer/assets" = "seer/assets"

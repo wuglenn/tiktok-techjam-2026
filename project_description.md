@@ -285,9 +285,10 @@ leak into training by a config mistake.
 ### Generated assets in this repo
 
 - Weights are **not in git** (`*.pt` is gitignored). A TechJam `best.pt` is
-  ~5 GB (model + EMA + optimizer). There is no download URL — place a
-  checkpoint you were given, or train one. Discovery:
-  `$SEER_CHECKPOINT` → repo-root `best.pt` → newest `runs/*/best.pt`.
+  ~4.9 GB (model + EMA + optimizer). The released scoring checkpoint is
+  [glennwuwu/seer](https://huggingface.co/glennwuwu/seer); `predict.py`
+  downloads it on first run. Discovery: `$SEER_CHECKPOINT` → repo-root
+  `best.pt` → newest `runs/*/best.pt`.
 - [`eval/eval_step33500/`](eval/eval_step33500/) — committed held-out
   suite at step 33,500 (`summary.json`, per-set JSONs, `run_suite.py`,
   plus a small WildFake DALL-E FN dump under `errors_dalle_advanced/`).
