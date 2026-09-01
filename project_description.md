@@ -289,9 +289,10 @@ leak into training by a config mistake.
   [glennwuwu/seer](https://huggingface.co/glennwuwu/seer); `predict.py`
   downloads it on first run. Discovery: `$SEER_CHECKPOINT` → repo-root
   `best.pt` → newest `runs/*/best.pt`.
-- [`eval/eval_step33500/`](eval/eval_step33500/) — committed held-out
+- [`client/eval/eval_step33500/`](client/eval/eval_step33500) — committed held-out
   suite at step 33,500 (`summary.json`, per-set JSONs, `run_suite.py`,
-  plus a small WildFake DALL-E FN dump under `errors_dalle_advanced/`).
+  plus a small WildFake DALL-E FN dump under `errors_dalle_advanced/`),
+  bundled with the dashboard.
 - [`docs/deliverables/heldout-eval-step27500.md`](docs/deliverables/heldout-eval-step27500.md)
   — earlier writeup of the same recipe at step 27,500 (metrics only; the
   pod-side JSON folder is not in this checkout).
@@ -313,7 +314,7 @@ ships code, configs, metrics, and heatmaps of publicly licensed datasets.
 
 Numbers below are from the committed suite at **step 33,500**
 (`runs/seer_vitl/last.pt`, clean protocol, threshold 0.5):
-[`eval/eval_step33500/`](eval/eval_step33500/). An earlier writeup of the
+[`client/eval/eval_step33500/`](client/eval/eval_step33500). An earlier writeup of the
 same recipe at step 27,500 lives at
 [`docs/deliverables/heldout-eval-step27500.md`](docs/deliverables/heldout-eval-step27500.md).
 `best.pt` is a different snapshot — it follows balanced accuracy on the

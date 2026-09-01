@@ -84,7 +84,6 @@ const TABS: StackTab[] = [
         ],
       }
     ],
-    note: "Attention kernels resolve at load time with graceful degradation (flash_attention_4 → 3 → 2 → sdpa), so the same checkpoint runs on a laptop and on an H100.",
   },
   {
     key: "data",

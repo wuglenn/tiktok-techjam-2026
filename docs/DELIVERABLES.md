@@ -43,9 +43,9 @@ not in the tree.
 | README (overview, setup, reproduce, limitations) | [`README.md`](../README.md) |
 | Team member contributions | **Not in the repo.** No contributions section in the README. |
 | Demo video / YouTube link | **Not in the repo.** No video file and no YouTube URL. |
-| Robustness summary | Dashboard [`client/`](../client/) `/robustness` (clean vs transformed + NTIRE open-test). Committed NTIRE public-test JSON at [`eval/eval_step33500/ntire_test.json`](../eval/eval_step33500/ntire_test.json). |
-| Error analysis | Dashboard `/errors` plus `--error-dir` on `main.py eval`. Committed suite includes a small WildFake DALL-E FN dump under `eval/eval_step33500/errors_dalle_advanced/`. Earlier writeup: [`deliverables/heldout-eval-step27500.md`](deliverables/heldout-eval-step27500.md). |
-| Held-out scores | [`eval/eval_step33500/`](../eval/eval_step33500/) (step 33,500). Do not mix with the step-27,500 writeup. |
+| Robustness summary | Dashboard [`client/`](../client/) `/robustness` (clean vs transformed + NTIRE open-test). Committed NTIRE public-test JSON at [`client/eval/eval_step33500/ntire_test.json`](../client/eval/eval_step33500/ntire_test.json). |
+| Error analysis | Dashboard `/errors` plus `--error-dir` on `main.py eval`. Committed suite includes a small WildFake DALL-E FN dump under `client/eval/eval_step33500/errors_dalle_advanced/`. Earlier writeup: [`deliverables/heldout-eval-step27500.md`](deliverables/heldout-eval-step27500.md). |
+| Held-out scores | [`client/eval/eval_step33500/`](../client/eval/eval_step33500) (step 33,500). Do not mix with the step-27,500 writeup. |
 | Live demo | `client/` dashboard — `/`, `/analyze`, `/robustness`, `/errors` (see [`client/README.md`](../client/README.md)). Prefer `client/scripts/seer_serve.py` on **:8765**; Next is **:3000**. Upload limits: 12 images / 40 MB. Heatmaps work when a checkpoint with a local/patch head is loaded (`seer_probe.yaml` includes that head). Env: `SEER_CHECKPOINT`, `SEER_PYTHON`, `SEER_INFER_URL`, `HF_TOKEN`. `SEER_DATA_ROOT` is Python/data only, not the Next app. |
 | Tests / CI / Docker / LICENSE | **None.** No `tests/`, no pytest suite, no `.github` workflows, no Dockerfile, no LICENSE file. |
 | Weights | **Not in git.** Released scoring checkpoint: [glennwuwu/seer](https://huggingface.co/glennwuwu/seer). `predict.py` downloads `best.pt` on first run. Discovery: `$SEER_CHECKPOINT` → repo-root `best.pt` → newest `runs/*/best.pt`. Without a checkpoint, `/analyze` is SIMULATED. |

@@ -179,7 +179,6 @@ export function MixtureTable() {
       })}
       <p className="caption py-3">
         usable by the mix: 2,576,437 images — 1,701,288 fake · 875,149 real.
-        weights sum to 1.
       </p>
     </div>
   );

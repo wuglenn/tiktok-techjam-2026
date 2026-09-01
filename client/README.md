@@ -35,6 +35,44 @@ npm run dev        # http://localhost:3000
 
 Production: `npm run build && npm start`.
 
+## Modal deployment (remote GPU)
+
+[`scripts/modal_seer.py`](scripts/modal_seer.py) deploys the detector to
+[Modal](https://modal.com) so the dashboard can score images with **no local
+weights, GPU, or Python environment**. It pulls `best.pt` from
+[glennwuwu/seer](https://huggingface.co/glennwuwu/seer) into a Modal Volume,
+keeps the model in GPU memory, and serves the same `/health` + `/analyze`
+contract as `seer_serve.py` (images travel as base64 instead of local paths).
+
+```bash
+pip install modal
+modal setup                                    # one-time auth
+modal run client/scripts/modal_seer.py         # fill the weights Volume (~4.9 GB, once)
+modal deploy client/scripts/modal_seer.py      # prints the endpoint URL
+
+# then point the dashboard at it
+export SEER_MODAL_URL=https://<workspace>--seer-seer-api.modal.run
+cd client && npm run dev
+```
+
+With `SEER_MODAL_URL` set, `/analyze` shows a **Score on Modal** flag. Tick it
+and uploads are POSTed to the deployment (`backend=modal` on `/api/analyze`);
+without it everything runs locally as before. The choice is remembered in
+`localStorage`. `/api/status` reports deployment health — a cold container
+boots on the first request (~1–2 min including the 4.9 GB load; the Volume
+pre-fetch above is what keeps it off the GPU clock).
+
+| Command | What it does |
+| --- | --- |
+| `modal deploy client/scripts/modal_seer.py` | persistent deployment; prints the URL to export |
+| `modal serve client/scripts/modal_seer.py` | ephemeral dev deployment, live-reloads on file changes |
+| `modal run client/scripts/modal_seer.py --image-path a.jpg` | smoke-test one image through the deployed class |
+| `SEER_MODAL_GPU=A100 modal deploy …` | pick another GPU (default `L40S`) |
+
+The endpoint URL is public — anyone holding it can score images. For
+restricted access use Modal's [proxy tokens](https://modal.com/docs/guide/webhooks#authentication)
+or front it with your own auth.
+
 | Port | Process |
 | --- | --- |
 | **3000** | `npm run dev` (Next.js) |
@@ -45,6 +83,7 @@ Production: `npm run build && npm start`.
 | `SEER_CHECKPOINT` | discovery below | live-inference weights |
 | `SEER_PYTHON` | `uv run python`, else repo `.venv` | interpreter for `seer_infer.py` / `seer_serve.py` |
 | `SEER_INFER_URL` | `http://127.0.0.1:8765` | persistent inference server |
+| `SEER_MODAL_URL` | — | Modal deployment URL ([`scripts/modal_seer.py`](scripts/modal_seer.py)); enables the "Score on Modal" flag |
 | `HF_TOKEN` | — | gated Hub access if the Python side has to fetch a backbone; not required once a local `.pt` is present |
 | `SEER_DATA_ROOT` | `/workspace/data` if writable, else `F:/techjam` | **not** read by the Next app; only Python training / eval / fetch scripts |
 
@@ -64,15 +103,19 @@ The dashboard works in two modes and labels itself honestly in either:
   Each image returns `{prob_ai, label, grid}` — `grid` is the local
   head's raw patch probabilities (heatmaps work; probe checkpoints
   include a patch head too).
+- **Live on Modal** — with `SEER_MODAL_URL` set, the "Score on Modal" flag
+  sends uploads to the remote deployment instead; no local checkpoint,
+  interpreter, or repo root is required. Same `{prob_ai, label, grid}`
+  records, same heatmap rendering.
 - **Simulated** — no checkpoint (or no interpreter / no repo root).
   `/api/analyze` returns deterministic fake verdicts seeded from the file
   bytes. The UI marks every simulated result.
 
-`/robustness` and `/errors` scan eval JSONs from `eval/eval_step33500/`
-first, then `runs/eval/` and `runs/` (written by
-`main.py eval --out-json ...`, error panels by `--error-dir`). With none
-present they show bundled demo data, clearly labeled. To populate extra
-runs:
+`/robustness` and `/errors` scan the committed suite bundled at
+`client/eval/eval_step33500/` first, then `runs/eval/` and `runs/` from
+the repo root (written by `main.py eval --out-json ...`, error panels by
+`--error-dir`). With none present they show bundled demo data, clearly
+labeled. To populate extra runs:
 
 ```bash
 uv run python main.py eval --checkpoint runs/seer_vitl/best.pt \
@@ -81,7 +124,7 @@ uv run python main.py eval --checkpoint runs/seer_vitl/best.pt \
   --out-json runs/eval/ntire_val.json
 ```
 
-The committed step-33,500 suite is already under `eval/eval_step33500/`
+The committed step-33,500 suite is bundled at `client/eval/eval_step33500/`
 and is what the dashboard picks up first.
 
 ## Layout
@@ -101,4 +144,6 @@ src/
   lib/                    # shared types, turbo colormap, formatting, demo data
 scripts/seer_serve.py     # persistent server on :8765 (preferred)
 scripts/seer_infer.py     # one-shot JSON bridge (fallback spawn)
+scripts/modal_seer.py     # Modal deployment — remote GPU backend (see above)
+eval/eval_step33500/      # committed held-out suite: JSONs + error panels + run_suite.py
 ```

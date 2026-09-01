@@ -218,6 +218,12 @@ export function inferServerUrl(): string {
   return (raw || "http://127.0.0.1:8765").replace(/\/$/, "");
 }
 
+/** Modal deployment URL ($SEER_MODAL_URL), or null when not configured. */
+export function modalServerUrl(): string | null {
+  const raw = process.env.SEER_MODAL_URL?.trim();
+  return raw ? raw.replace(/\/$/, "") : null;
+}
+
 export interface InferServerHealth {
   ok: boolean;
   ready?: boolean;
@@ -318,6 +324,66 @@ async function runViaServer(
 }
 
 /**
+ * Score uploads against the Modal deployment (client/scripts/modal_seer.py).
+ * Images travel as base64 — the remote container cannot read local paths.
+ */
+async function runViaModal(
+  url: string,
+  files: UploadFile[],
+  timeoutMs: number,
+): Promise<AnalyzeResult[]> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${url}/analyze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        images: files.map((f) => ({ name: f.name, data: f.buf.toString("base64") })),
+      }),
+      signal: ctrl.signal,
+      cache: "no-store",
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      let detail = text.slice(0, 400);
+      try {
+        const parsed = JSON.parse(text) as { error?: string; detail?: unknown };
+        if (typeof parsed.error === "string") detail = parsed.error;
+        else if (parsed.detail !== undefined)
+          detail = JSON.stringify(parsed.detail).slice(0, 400);
+      } catch {
+        /* keep raw text */
+      }
+      throw new Error(`modal deployment ${res.status}: ${detail}`);
+    }
+    const records = JSON.parse(text) as BridgeRecord[];
+    if (!Array.isArray(records)) throw new Error("modal deployment returned no array");
+    return recordsToResults(records, files);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Live inference on the Modal deployment ($SEER_MODAL_URL). No health
+ * pre-probe on purpose: a cold Modal container boots on the first request
+ * and the POST itself waits for it (can take a minute or two).
+ */
+export async function runModal(
+  files: UploadFile[],
+  timeoutMs = 290_000,
+): Promise<AnalyzeResult[]> {
+  const url = modalServerUrl();
+  if (!url) {
+    throw new Error(
+      "SEER_MODAL_URL is not set — deploy the model with `modal deploy client/scripts/modal_seer.py` and export SEER_MODAL_URL to the printed URL",
+    );
+  }
+  return runViaModal(url, files, timeoutMs);
+}
+
+/**
  * Live inference: save uploads to a scratch dir, score them on the
  * persistent server when it is up, otherwise spawn `seer_infer.py`.
  */
@@ -409,14 +475,17 @@ export function parseEvalJson(text: string): unknown {
   return JSON.parse(text.replace(/\bNaN\b/g, "null"));
 }
 
-function resolveErrorFile(root: string, file: string): string | null {
-  const rel = file.replace(/^[/\\]+/, "");
+function resolveErrorFile(baseDir: string, file: string): string | null {
+  const rel = file.replace(/^[\/\\]+/, "");
   const candidates = [
-    path.isAbsolute(file) ? file : path.join(root, rel),
-    path.join(root, rel.replace(/^runs[/\\]seer_vitl[/\\]eval_step33500/, path.join("eval", "eval_step33500"))),
-    path.join(root, "client", "public", "errors", path.basename(file)),
-    path.join(root, "eval", "eval_step33500", "errors_dalle_advanced", path.basename(file)),
-    path.join(root, "eval", "eval_step33500", "errors_gallery", path.basename(file)),
+    path.isAbsolute(file) ? file : path.join(baseDir, rel),
+    path.join(
+      baseDir,
+      rel.replace(/^runs[\/\\]seer_vitl[\/\\]eval_step33500/, path.join("eval", "eval_step33500")),
+    ),
+    path.join(baseDir, "client", "public", "errors", path.basename(file)),
+    path.join(baseDir, "eval", "eval_step33500", "errors_dalle_advanced", path.basename(file)),
+    path.join(baseDir, "eval", "eval_step33500", "errors_gallery", path.basename(file)),
   ];
   for (const c of candidates) {
     if (fs.existsSync(c)) return c;
@@ -442,11 +511,14 @@ function suiteName(r: Record<string, unknown>, file: string): string {
   return base;
 }
 
-/** Normalize one raw eval JSON (seer/eval.py --out-json) for the client. */
+/** Normalize one raw eval JSON (seer/eval.py --out-json) for the client.
+ *
+ * `baseDir` is the directory the JSON's paths are relative to: the client
+ * dir for the bundled suite, the repo root for runs/ dumps. */
 export function normalizeEvalJson(
   raw: unknown,
   file: string,
-  root: string,
+  baseDir: string,
 ): EvalDataset | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
@@ -469,7 +541,7 @@ export function normalizeEvalJson(
     errors = (r.error_analysis as Array<Record<string, unknown>>)
       .map((e) => {
         const listed = typeof e.file === "string" ? e.file : null;
-        const abs = listed ? resolveErrorFile(root, listed) : null;
+        const abs = listed ? resolveErrorFile(baseDir, listed) : null;
         const generator =
           typeof e.generator === "string" && /^[0-9a-f]{20,}$/i.test(e.generator)
             ? "DALL·E 3 Advanced"
@@ -479,7 +551,7 @@ export function normalizeEvalJson(
         return {
           kind: e.kind === "fp" ? ("fp" as const) : ("fn" as const),
           rank: Number(e.rank ?? 0),
-          file: abs ? toClientErrorFile(root, abs) : undefined,
+          file: abs ? toPosix(path.relative(baseDir, abs)) : undefined,
           imageAvailable: !!abs,
           prob_ai: Number(e.prob_ai ?? 0),
           label: (e.label === 1 ? 1 : 0) as 0 | 1,
@@ -496,7 +568,7 @@ export function normalizeEvalJson(
   return {
     id: file,
     name: suiteName(r, file),
-    file: toPosix(path.relative(root, file)),
+    file: toPosix(path.relative(baseDir, file)),
     checkpoint: typeof r.checkpoint === "string" ? r.checkpoint : undefined,
     step: numOrUndef(r.step),
     perturbation: typeof r.perturbation === "string" ? r.perturbation : "clean",
@@ -524,16 +596,24 @@ function toPosix(p: string): string {
   return p.split(path.sep).join("/");
 }
 
-/** Scan eval/eval_step33500, then runs/eval and runs, newest first. */
-export function scanEvalRuns(root: string, limit = 30): EvalDataset[] {
+/** Scan the bundled client/eval/eval_step33500 suite, then the repo's
+ * runs/eval and runs (when the Seer repo root is present), newest first. */
+export function scanEvalRuns(root: string | null, limit = 30): EvalDataset[] {
   const out: EvalDataset[] = [];
   const seen = new Set<string>();
-  const dirs = [
-    path.join(root, "eval", "eval_step33500"),
-    path.join(root, "runs", "eval"),
-    path.join(root, "runs"),
+  // the committed step-33,500 suite ships with the dashboard itself, so
+  // /robustness and /errors work without the Python repo (e.g. Modal-only)
+  const clientDir = process.cwd();
+  const dirs: { dir: string; base: string }[] = [
+    { dir: path.join(clientDir, "eval", "eval_step33500"), base: clientDir },
   ];
-  for (const dir of dirs) {
+  if (root) {
+    dirs.push(
+      { dir: path.join(root, "runs", "eval"), base: root },
+      { dir: path.join(root, "runs"), base: root },
+    );
+  }
+  for (const { dir, base: baseDir } of dirs) {
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -554,7 +634,7 @@ export function scanEvalRuns(root: string, limit = 30): EvalDataset[] {
         const st = fs.statSync(p);
         if (st.size > 20 * 1024 * 1024) continue;
         const parsed = parseEvalJson(fs.readFileSync(p, "utf-8"));
-        const ds = normalizeEvalJson(parsed, p, root);
+        const ds = normalizeEvalJson(parsed, p, baseDir);
         if (ds) out.push(ds);
       } catch {
         /* unreadable / not an eval file — skip */
@@ -564,12 +644,17 @@ export function scanEvalRuns(root: string, limit = 30): EvalDataset[] {
   return out;
 }
 
-/** Validate an /api/eval-image src param: must resolve inside <root>/runs or <root>/eval. */
-export function safeEvalImagePath(root: string, rel: string): string | null {
-  const abs = path.resolve(root, rel);
-  const norm = path.normalize(abs);
-  const allowed = [path.resolve(root, "runs"), path.resolve(root, "eval")];
-  if (!allowed.some((base) => norm.startsWith(base + path.sep))) return null;
-  if (!/\.(png|jpe?g|webp)$/i.test(norm)) return null;
-  return fs.existsSync(norm) ? norm : null;
+/** Validate an /api/eval-image src param: must resolve inside <base>/runs or
+ * <base>/eval for the client dir (bundled suite) or the repo root (runs). */
+export function safeEvalImagePath(root: string | null, rel: string): string | null {
+  const cwd = process.cwd();
+  const bases = root && path.resolve(root) !== path.resolve(cwd) ? [cwd, root] : [cwd];
+  for (const base of bases) {
+    const abs = path.resolve(base, rel);
+    const allowed = [path.resolve(base, "runs"), path.resolve(base, "eval")];
+    if (!allowed.some((a) => abs.startsWith(a + path.sep))) continue;
+    if (!/\.(png|jpe?g|webp)$/i.test(abs)) continue;
+    if (fs.existsSync(abs)) return abs;
+  }
+  return null;
 }
