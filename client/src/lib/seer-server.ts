@@ -414,6 +414,7 @@ function resolveErrorFile(root: string, file: string): string | null {
   const candidates = [
     path.isAbsolute(file) ? file : path.join(root, rel),
     path.join(root, rel.replace(/^runs[/\\]seer_vitl[/\\]eval_step33500/, path.join("eval", "eval_step33500"))),
+    path.join(root, "client", "public", "errors", path.basename(file)),
     path.join(root, "eval", "eval_step33500", "errors_dalle_advanced", path.basename(file)),
     path.join(root, "eval", "eval_step33500", "errors_gallery", path.basename(file)),
   ];
@@ -421,6 +422,16 @@ function resolveErrorFile(root: string, file: string): string | null {
     if (fs.existsSync(c)) return c;
   }
   return null;
+}
+
+/** Public-folder assets become `/errors/…`; everything else stays repo-relative for /api/eval-image. */
+function toClientErrorFile(root: string, abs: string): string {
+  const publicDir = path.join(root, "client", "public");
+  const relPublic = path.relative(publicDir, abs);
+  if (!relPublic.startsWith("..") && !path.isAbsolute(relPublic)) {
+    return toPosix(relPublic);
+  }
+  return toPosix(path.relative(root, abs));
 }
 
 function suiteName(r: Record<string, unknown>, file: string): string {
@@ -468,7 +479,7 @@ export function normalizeEvalJson(
         return {
           kind: e.kind === "fp" ? ("fp" as const) : ("fn" as const),
           rank: Number(e.rank ?? 0),
-          file: abs ? toPosix(path.relative(root, abs)) : undefined,
+          file: abs ? toClientErrorFile(root, abs) : undefined,
           imageAvailable: !!abs,
           prob_ai: Number(e.prob_ai ?? 0),
           label: (e.label === 1 ? 1 : 0) as 0 | 1,

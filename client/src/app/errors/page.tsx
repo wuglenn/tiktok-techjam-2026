@@ -152,8 +152,14 @@ function ErrorSection({
   );
 }
 
+function errorImageSrc(e: ErrorEntry): string | null {
+  if (!e.imageAvailable || !e.file) return null;
+  if (e.file.startsWith("errors/")) return `/${e.file}`;
+  return `/api/eval-image?src=${encodeURIComponent(e.file)}`;
+}
+
 function ErrorFigure({ e }: { e: ErrorEntry }) {
-  const src = e.imageAvailable && e.file ? `/api/eval-image?src=${encodeURIComponent(e.file)}` : null;
+  const src = errorImageSrc(e);
   return (
     <figure className="figure">
       <div className="figure-frame relative aspect-video">

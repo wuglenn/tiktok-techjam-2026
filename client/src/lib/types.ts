@@ -24,9 +24,9 @@ export interface MetricsRow {
 export interface ErrorEntry {
   kind: "fp" | "fn";
   rank: number;
-  /** absolute path on disk (live mode) */
+  /** `errors/<name>` for files in client/public, else a repo-relative path for /api/eval-image */
   file?: string;
-  /** true when `file` exists and can be served by /api/eval-image */
+  /** true when `file` exists (static public asset or /api/eval-image) */
   imageAvailable?: boolean;
   prob_ai: number;
   /** ground truth: 1 = AI, 0 = real */
