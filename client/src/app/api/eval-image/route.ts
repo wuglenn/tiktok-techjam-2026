@@ -20,7 +20,6 @@ export async function GET(req: NextRequest) {
   if (!rel) return new NextResponse("missing src", { status: 400 });
 
   const root = repoRoot();
-  if (!root) return new NextResponse("repo root not found", { status: 404 });
 
   const abs = safeEvalImagePath(root, rel);
   if (!abs) return new NextResponse("not found", { status: 404 });

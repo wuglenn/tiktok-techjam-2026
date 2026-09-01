@@ -9,20 +9,20 @@ export const runtime = "nodejs";
 
 export async function GET() {
   const root = repoRoot();
-  if (root) {
-    const datasets = scanEvalRuns(root);
-    if (datasets.length) {
-      const body: EvalResponse = { mode: "live", root, datasets };
-      return NextResponse.json(body);
-    }
+  // the committed suite is bundled in client/eval, so this works even
+  // without the Python repo (e.g. dashboard served with the Modal backend)
+  const datasets = scanEvalRuns(root);
+  if (datasets.length) {
+    const body: EvalResponse = { mode: "live", root, datasets };
+    return NextResponse.json(body);
   }
   const body: EvalResponse = {
     mode: "demo",
     root,
     datasets: DEMO_DATASETS,
     note: root
-      ? "no eval JSONs under eval/eval_step33500 or runs/ — drop a seer/eval.py --out-json dump there to replace the placeholders"
-      : "Seer repo root not found — showing bundled demo data",
+      ? "no eval JSONs under client/eval/eval_step33500 or runs/ — drop a seer/eval.py --out-json dump there to replace the placeholders"
+      : "standalone dashboard (no Seer repo root) — showing bundled demo data",
   };
   return NextResponse.json(body);
 }

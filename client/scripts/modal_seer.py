@@ -43,7 +43,22 @@ import modal
 HF_REPO_ID = "glennwuwu/seer"
 HF_WEIGHTS = "best.pt"  # ~4.9 GB: model + EMA + optimizer
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+def _repo_root() -> Optional[Path]:
+    """Walk up from this file to the repo root (has src/seer + pyproject.toml).
+
+    Returns None inside the Modal container: Modal copies this file to
+    /root/modal_seer.py there, and the seer package is already baked into
+    the image at /root/seer/src, so nothing needs bundling.
+    """
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "pyproject.toml").is_file() and (
+            parent / "src" / "seer" / "model.py"
+        ).is_file():
+            return parent
+    return None
+
+
+REPO_ROOT = _repo_root()
 CHECKPOINT_DIR = Path("/checkpoints")
 CHECKPOINT_PATH = CHECKPOINT_DIR / HF_WEIGHTS
 
@@ -63,11 +78,10 @@ image = (
         "huggingface-hub>=0.30",
         "fastapi",
     )
-    # the seer package: model code + the bundled DINOv3 config, so no gated
-    # DINOv3 Hub access is needed to rebuild the architecture
-    .add_local_dir(REPO_ROOT / "src", "/root/seer/src", copy=True)
     .env({"PYTHONPATH": "/root/seer/src", "SEER_DATA_ROOT": "/root/seer-data"})
 )
+if REPO_ROOT is not None:  # deploy-time only: bundle the seer package source
+    image = image.add_local_dir(REPO_ROOT / "src", "/root/seer/src", copy=True)
 
 app = modal.App("seer", image=image)
 

@@ -1,7 +1,7 @@
 # Held-out eval — `seer_vitl` step 27,500
 
 This is a **step 27,500** writeup. The committed, inspectable suite in
-this checkout is later: [`eval/eval_step33500/`](../../eval/eval_step33500/)
+this checkout is later: [`client/eval/eval_step33500/`](../../client/eval/eval_step33500)
 (step **33,500**). Do not quote these rows as current.
 
 Clean-protocol scores for `runs/seer_vitl/last.pt` at step 27,500. NTIRE
@@ -12,7 +12,7 @@ ran inside the training loop. Everything else on disk under
 Raw JSON + the suite log lived next to the training checkpoint on the
 pod (`runs/seer_vitl/eval_step27000/`). That folder is **not** in this
 repo. The in-repo runner for the later snapshot is
-`eval/eval_step33500/run_suite.py`.
+`client/eval/eval_step33500/run_suite.py`.
 
 ## Setup
 
@@ -201,7 +201,7 @@ triggering on ordinary photographs.
   train-loop print at step 26,000: `ntire_test` n=2,500, macro acc 90.97%,
   F1 91.12%, AUROC 96.47%, mAP 95.49%, clean 97.50%, distorted 84.45%,
   robust AUROC 91.55%. The committed step-33,500 suite *does* include
-  `ntire_test` (`eval/eval_step33500/ntire_test.json`).
+  `ntire_test` (`client/eval/eval_step33500/ntire_test.json`).
 - Pangram **augmented** protocol (`--augmented`) and the
   `--perturbation all` robustness table.
 - Synthbuster + RAISE, WikiArt, WildFake DALL·E — not on this volume.

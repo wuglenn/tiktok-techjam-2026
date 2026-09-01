@@ -72,5 +72,5 @@ Desktop.ini
 .vscode/
 
 
-eval/eval_step33500/errors_gallery/*
-eval/eval_step33500/errors_raw/*
+client/eval/eval_step33500/errors_gallery/*
+client/eval/eval_step33500/errors_raw/*

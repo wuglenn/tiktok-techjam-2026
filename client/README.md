@@ -111,11 +111,11 @@ The dashboard works in two modes and labels itself honestly in either:
   `/api/analyze` returns deterministic fake verdicts seeded from the file
   bytes. The UI marks every simulated result.
 
-`/robustness` and `/errors` scan eval JSONs from `eval/eval_step33500/`
-first, then `runs/eval/` and `runs/` (written by
-`main.py eval --out-json ...`, error panels by `--error-dir`). With none
-present they show bundled demo data, clearly labeled. To populate extra
-runs:
+`/robustness` and `/errors` scan the committed suite bundled at
+`client/eval/eval_step33500/` first, then `runs/eval/` and `runs/` from
+the repo root (written by `main.py eval --out-json ...`, error panels by
+`--error-dir`). With none present they show bundled demo data, clearly
+labeled. To populate extra runs:
 
 ```bash
 uv run python main.py eval --checkpoint runs/seer_vitl/best.pt \
@@ -124,7 +124,7 @@ uv run python main.py eval --checkpoint runs/seer_vitl/best.pt \
   --out-json runs/eval/ntire_val.json
 ```
 
-The committed step-33,500 suite is already under `eval/eval_step33500/`
+The committed step-33,500 suite is bundled at `client/eval/eval_step33500/`
 and is what the dashboard picks up first.
 
 ## Layout
@@ -145,4 +145,5 @@ src/
 scripts/seer_serve.py     # persistent server on :8765 (preferred)
 scripts/seer_infer.py     # one-shot JSON bridge (fallback spawn)
 scripts/modal_seer.py     # Modal deployment — remote GPU backend (see above)
+eval/eval_step33500/      # committed held-out suite: JSONs + error panels + run_suite.py
 ```

@@ -56,7 +56,7 @@ content is. Metrics are reported at threshold 0.5.
 ```
 
 Held-out results (step 33,500, committed in
-[`eval/eval_step33500/`](eval/eval_step33500/)):
+[`client/eval/eval_step33500/`](client/eval/eval_step33500)):
 
 | Set | n (fake / real) | Macro acc | mAP | AUROC | FPR |
 |---|---:|---:|---:|---:|---:|
@@ -282,18 +282,18 @@ uv run python main.py infer --checkpoint runs/seer_vitl/best.pt \
 ### Re-running the held-out suite
 
 The published numbers are the committed JSONs in
-[`eval/eval_step33500/`](eval/eval_step33500/), scored from the
+[`client/eval/eval_step33500/`](client/eval/eval_step33500), scored from the
 step-33,500 `last.pt`. A local `best.pt` follows train-val balanced
 accuracy — a different checkpoint; do not treat them as interchangeable.
 
 | Artifact | What it is |
 |---|---|
-| [`eval/eval_step33500/`](eval/eval_step33500/) | committed suite, step-33,500 `last.pt` — **the published numbers** |
+| [`client/eval/eval_step33500/`](client/eval/eval_step33500) | committed suite, step-33,500 `last.pt` — **the published numbers** |
 | [`docs/deliverables/heldout-eval-step27500.md`](docs/deliverables/heldout-eval-step27500.md) | earlier writeup of the same recipe, step 27,500 |
 | `best.pt` | train-val snapshot; val saturates early, so not the file behind the table |
 
 The committed driver is
-[`eval/eval_step33500/run_suite.py`](eval/eval_step33500/run_suite.py);
+[`client/eval/eval_step33500/run_suite.py`](client/eval/eval_step33500/run_suite.py);
 it hardcodes the pod paths from that run. Equivalent commands:
 
 ```bash
@@ -406,8 +406,7 @@ configs/                 seer_vitl_512 (hero) | seer_vitl_local | seer_probe | s
 src/seer/                model, train, eval, data, augment, heatmap, infer, paths
 scripts/                 fetch_data, openfake*, download_*, wire_gasstation, ...
 get_datasets.py          --list / --tier / --only acquisition plan
-eval/eval_step33500/     committed held-out JSONs + run_suite.py
-client/                  Next.js dashboard
+client/                  Next.js dashboard; committed held-out suite in client/eval/
 docs/                    DATA_MIXTURE.md, DELIVERABLES.md, deliverables/
 project_description.md  Devpost writeup
 ```
