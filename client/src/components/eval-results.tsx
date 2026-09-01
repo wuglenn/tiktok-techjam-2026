@@ -57,8 +57,9 @@ export function EvalResults() {
       <Measure>
         <h3 className="small-head">NTIRE 2026 open test</h3>
         <p className="mt-1 text-[16px] leading-[1.5] text-ink-body">
-          The challenge leaderboard on ROC AUC and robust ROC AUC, from
-          Table 3 of the{" "}
+          The open-test leaderboard of the NTIRE 2026 Challenge on Robust
+          AI-Generated Image Detection in the Wild, held at CVPR 2026.
+          ROC AUC and robust ROC AUC, from Table 3 of the{" "}
           <a
             href="https://arxiv.org/pdf/2604.11487"
             target="_blank"
