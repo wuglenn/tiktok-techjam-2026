@@ -483,6 +483,7 @@ function resolveErrorFile(baseDir: string, file: string): string | null {
       baseDir,
       rel.replace(/^runs[\/\\]seer_vitl[\/\\]eval_step33500/, path.join("eval", "eval_step33500")),
     ),
+    path.join(baseDir, "public", "errors", path.basename(file)),
     path.join(baseDir, "client", "public", "errors", path.basename(file)),
     path.join(baseDir, "eval", "eval_step33500", "errors_dalle_advanced", path.basename(file)),
     path.join(baseDir, "eval", "eval_step33500", "errors_gallery", path.basename(file)),
@@ -493,14 +494,13 @@ function resolveErrorFile(baseDir: string, file: string): string | null {
   return null;
 }
 
-/** Public-folder assets become `/errors/…`; everything else stays repo-relative for /api/eval-image. */
-function toClientErrorFile(root: string, abs: string): string {
-  const publicDir = path.join(root, "client", "public");
-  const relPublic = path.relative(publicDir, abs);
-  if (!relPublic.startsWith("..") && !path.isAbsolute(relPublic)) {
-    return toPosix(relPublic);
-  }
-  return toPosix(path.relative(root, abs));
+/** Public-folder assets become `errors/…`; everything else stays baseDir-relative for /api/eval-image. */
+function toClientErrorFile(baseDir: string, abs: string): string {
+  const posix = toPosix(path.resolve(abs));
+  const marker = "/public/errors/";
+  const idx = posix.toLowerCase().lastIndexOf(marker);
+  if (idx !== -1) return `errors/${posix.slice(idx + marker.length)}`;
+  return toPosix(path.relative(baseDir, abs));
 }
 
 function suiteName(r: Record<string, unknown>, file: string): string {
@@ -551,7 +551,7 @@ export function normalizeEvalJson(
         return {
           kind: e.kind === "fp" ? ("fp" as const) : ("fn" as const),
           rank: Number(e.rank ?? 0),
-          file: abs ? toPosix(path.relative(baseDir, abs)) : undefined,
+          file: abs ? toClientErrorFile(baseDir, abs) : undefined,
           imageAvailable: !!abs,
           prob_ai: Number(e.prob_ai ?? 0),
           label: (e.label === 1 ? 1 : 0) as 0 | 1,
