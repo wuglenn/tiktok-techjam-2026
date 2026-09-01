@@ -13,7 +13,7 @@ Mixture, licences, and fetch commands: [`docs/DATA_MIXTURE.md`](docs/DATA_MIXTUR
 [Limitations and next steps](#limitations-and-next-steps) ·
 [Team member contributions](#team-member-contributions)
 
-**Score images now:** [Quick start](#quick-start-score-a-folder-of-images) · [`predict.py`](predict.py) · [weights](https://huggingface.co/glennwuwu/seer)
+**Score images now:** [Quick start](#quick-start-score-a-folder-of-images) · [Install uv + `uv.lock`](#install-uv-and-dependencies-from-uvlock) · [`predict.py`](predict.py) · [weights](https://huggingface.co/glennwuwu/seer)
 
 ---
 
@@ -26,38 +26,35 @@ where `pred` is **P(AI-generated) ∈ [0, 1]**.
 Weights live on Hugging Face: **[glennwuwu/seer](https://huggingface.co/glennwuwu/seer)**
 (`best.pt`, ~4.9 GB). The first run downloads them automatically.
 
-`uv` is **not** shipped with this repo. If `uv: command not found`, install it
-first, then install the exact packages pinned in [`uv.lock`](uv.lock).
+### Install uv and dependencies from `uv.lock`
+
+`uv` is **not** shipped with this repo. If the shell says `uv: command not found`,
+install it first, then install the exact packages pinned in [`uv.lock`](uv.lock).
 
 ```bash
-# 0. install uv (once). macOS / Linux:
+# if `uv: command not found` (macOS / Linux)
 curl -LsSf https://astral.sh/uv/install.sh | sh
-source $HOME/.local/bin/env          # or open a new terminal
-# Homebrew alternative:  brew install uv
-# Docs: https://docs.astral.sh/uv/getting-started/installation/
+source $HOME/.local/bin/env
+# or: brew install uv
+# docs: https://docs.astral.sh/uv/getting-started/installation/
 
-uv --version                         # confirm it is on PATH
+uv --version
 
-# 1. install dependencies from uv.lock (creates .venv, does not rewrite the lock)
+# Linux / NVIDIA GPU — exact versions from uv.lock (does not rewrite the lock)
 uv sync --frozen
-
-# 2. score every image in a directory (or pass a single image path)
 uv run python predict.py --image-dir ./images --out preds.json
-```
 
-`--frozen` is the lockfile install: uv reads `uv.lock` and installs those
-versions only. Use `uv sync --locked` if you also want uv to error when
-`pyproject.toml` and `uv.lock` are out of date.
-
-**macOS / CPU (MacBook, no NVIDIA GPU).** `uv.lock` pins the CUDA 12.4 torch
-wheel, which has no macOS build. Install everything else from the lock, then
-a Mac/CPU torch:
-
-```bash
+# macOS / CPU (MacBook — uv.lock pins a CUDA torch wheel that has no macOS build)
 uv sync --frozen --no-install-package torch
 uv pip install "torch>=2.6,<3"
 uv run python predict.py --image-dir ./images --device cpu --out preds.json
 ```
+
+`--frozen` is the lockfile install: uv reads `uv.lock` and installs those
+versions only. Use `uv sync --locked` if you also want uv to error when
+`pyproject.toml` and `uv.lock` are out of date. After the curl installer,
+`source $HOME/.local/bin/env` (or open a new terminal) or `uv` will still be
+missing from PATH.
 
 That is the whole getting-started path. No extra Hub login is required for
 scoring: the architecture config is bundled, and the fine-tuned weights come
@@ -88,8 +85,8 @@ threshold 0.5. JPEG / PNG / WebP / BMP / TIFF / GIF are scanned recursively.
 | `--resume` | off | continue an interrupted directory run |
 
 CPU example: `uv run python predict.py --image-dir ./images --device cpu`.
-`uv sync` pins the CUDA 12.4 torch wheel; see [Setup](#setup-and-installation)
-if that install does not match your machine.
+On a Mac, use the lockfile + Mac torch commands above — a plain
+`uv sync --frozen` will fail looking for a CUDA wheel.
 
 ---
 
