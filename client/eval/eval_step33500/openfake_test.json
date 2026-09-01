@@ -332,7 +332,7 @@
     {
       "kind": "fp",
       "rank": 1,
-      "file": "client/public/errors/fp_01_p0.986_docci.png",
+      "file": "public/errors/fp_01_p0.986_docci.png",
       "prob_ai": 0.986363,
       "label": 0,
       "explained": true,
@@ -342,7 +342,7 @@
     {
       "kind": "fp",
       "rank": 2,
-      "file": "client/public/errors/fp_02_p0.728_imagenet.png",
+      "file": "public/errors/fp_02_p0.728_imagenet.png",
       "prob_ai": 0.727975,
       "label": 0,
       "explained": true,
@@ -352,7 +352,7 @@
     {
       "kind": "fp",
       "rank": 3,
-      "file": "client/public/errors/fp_03_p0.647_docci.png",
+      "file": "public/errors/fp_03_p0.647_docci.png",
       "prob_ai": 0.646906,
       "label": 0,
       "explained": true,
@@ -362,7 +362,7 @@
     {
       "kind": "fn",
       "rank": 1,
-      "file": "client/public/errors/fn_01_p0.032_1d4135eb385210a437a2c66e5a1487c1.png",
+      "file": "public/errors/fn_01_p0.032_1d4135eb385210a437a2c66e5a1487c1.png",
       "prob_ai": 0.03173828125,
       "label": 1,
       "explained": true,
@@ -372,7 +372,7 @@
     {
       "kind": "fn",
       "rank": 2,
-      "file": "client/public/errors/fn_02_p0.004_midjourney-7.png",
+      "file": "public/errors/fn_02_p0.004_midjourney-7.png",
       "prob_ai": 0.004199,
       "label": 1,
       "explained": true,
@@ -382,7 +382,7 @@
     {
       "kind": "fn",
       "rank": 3,
-      "file": "client/public/errors/fn_03_p0.318_ideogram-2.0.png",
+      "file": "public/errors/fn_03_p0.318_ideogram-2.0.png",
       "prob_ai": 0.318273,
       "label": 1,
       "explained": true,
