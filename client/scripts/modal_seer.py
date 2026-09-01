@@ -26,8 +26,6 @@ that live-reloads on file changes. Weights are cached in the
 changed at deploy time, e.g. `SEER_MODAL_GPU=A100 modal deploy ...`.
 """
 
-from __future__ import annotations
-
 import base64
 import binascii
 import io
@@ -238,14 +236,6 @@ class Seer:
     def api(self):
         from fastapi import FastAPI
         from fastapi.responses import JSONResponse
-        from pydantic import BaseModel
-
-        class ImageIn(BaseModel):
-            name: str = "image"
-            data: str  # base64 bytes, raw or as a data: URL
-
-        class AnalyzeIn(BaseModel):
-            images: list[ImageIn]
 
         web_app = FastAPI(title="Seer", docs_url=None, redoc_url=None, openapi_url=None)
 
@@ -254,6 +244,7 @@ class Seer:
             return {
                 "ok": True,
                 "ready": True,
+                "revision": 2,
                 "checkpoint": f"{HF_REPO_ID}/{HF_WEIGHTS} (Modal)",
                 "device": str(self.device),
                 "backbone": self.meta.get("backbone"),
@@ -263,10 +254,23 @@ class Seer:
             }
 
         @web_app.post("/analyze")
-        def analyze(payload: AnalyzeIn):
+        def analyze(payload: dict):
+            # plain dict body (no pydantic models): closure-local model classes
+            # are fragile under FastAPI's annotation resolution
+            images = payload.get("images") or payload.get("image") or []
+            if isinstance(images, dict):
+                images = [images]
+            if not isinstance(images, list) or not images:
+                return JSONResponse(status_code=400, content={"error": "no images"})
+            for im in images:
+                if not isinstance(im, dict) or not isinstance(im.get("data"), str) or not im.get("data"):
+                    return JSONResponse(
+                        status_code=400,
+                        content={"error": 'each image needs {"name", "data": "<base64>"}'},
+                    )
             try:
                 t0 = time.time()
-                records = self._score([im.model_dump() for im in payload.images])
+                records = self._score(images)
                 print(
                     f"[modal] scored {len(records)} image(s) in {time.time() - t0:.2f}s",
                     flush=True,
