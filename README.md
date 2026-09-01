@@ -40,13 +40,13 @@ source $HOME/.local/bin/env
 
 uv --version
 
-# Linux / NVIDIA GPU — exact versions from uv.lock (does not rewrite the lock)
+# install exact versions from uv.lock (creates .venv, does not rewrite the lock)
 uv sync --frozen
+
+# score every image in a directory (or pass a single image path)
 uv run python predict.py --image-dir ./images --out preds.json
 
-# macOS / CPU (MacBook — uv.lock pins a CUDA torch wheel that has no macOS build)
-uv sync --frozen --no-install-package torch
-uv pip install "torch>=2.6,<3"
+# Apple Silicon / no NVIDIA GPU:
 uv run python predict.py --image-dir ./images --device cpu --out preds.json
 ```
 
@@ -55,6 +55,10 @@ versions only. Use `uv sync --locked` if you also want uv to error when
 `pyproject.toml` and `uv.lock` are out of date. After the curl installer,
 `source $HOME/.local/bin/env` (or open a new terminal) or `uv` will still be
 missing from PATH.
+
+`uv.lock` records **two** torch builds: CUDA 12.4 on Linux/Windows, and the
+PyPI macOS ARM wheel (`macosx_14_0_arm64`) on Darwin. `uv run` / `uv sync`
+pick the one for your machine — you do not need `--no-install-package torch`.
 
 That is the whole getting-started path. No extra Hub login is required for
 scoring: the architecture config is bundled, and the fine-tuned weights come
@@ -84,9 +88,7 @@ threshold 0.5. JPEG / PNG / WebP / BMP / TIFF / GIF are scanned recursively.
 | `--out-detailed` | off | richer JSON (label, size, heatmap path, run metadata) |
 | `--resume` | off | continue an interrupted directory run |
 
-CPU example: `uv run python predict.py --image-dir ./images --device cpu`.
-On a Mac, use the lockfile + Mac torch commands above — a plain
-`uv sync --frozen` will fail looking for a CUDA wheel.
+CPU / Mac example: `uv run python predict.py --image-dir ./images --device cpu`.
 
 ---
 
@@ -172,17 +174,14 @@ uv sync --locked
 uv sync --frozen --group gen         # scripts/generate_mirrors.py only
 ```
 
-`pyproject.toml` pins torch to the **CUDA 12.4** wheel index
-(`pytorch-cu124`). That is what `uv.lock` records — Linux/Windows GPU.
-On **macOS or CPU-only**, skip the CUDA wheel and install a platform torch
-after the lockfile sync:
+`uv.lock` records two torch builds: **CUDA 12.4** on Linux/Windows
+(`pytorch-cu124`) and the **PyPI macOS ARM** wheel on Darwin. `uv sync
+--frozen` installs the one for your platform. On a MacBook:
 
 ```bash
-uv sync --frozen --no-install-package torch
-uv pip install "torch>=2.6,<3"
+uv sync --frozen
+uv run python predict.py --image-dir ./images --device cpu --out preds.json
 ```
-
-Then `uv run python predict.py --image-dir ./images --device cpu`.
 
 ```bash
 # Hugging Face auth — only for *training / data fetch*
