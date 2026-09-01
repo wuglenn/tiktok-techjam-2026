@@ -22,6 +22,7 @@ export default function AnalyzePage() {
   const [meta, setMeta] = useState<AnalyzeResponse | null>(null);
   const [dragging, setDragging] = useState(false);
   const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [useModal, setUseModal] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -40,6 +41,25 @@ export default function AnalyzePage() {
     };
   }, []);
 
+  // restore the persisted backend flag after mount (avoids an SSR/localStorage
+  // hydration mismatch), and write it back only on user action
+  useEffect(() => {
+    try {
+      setUseModal(window.localStorage.getItem("seer-use-modal") === "1");
+    } catch {
+      /* private mode etc. */
+    }
+  }, []);
+
+  const toggleModal = useCallback((next: boolean) => {
+    setUseModal(next);
+    try {
+      window.localStorage.setItem("seer-use-modal", next ? "1" : "0");
+    } catch {
+      /* private mode etc. */
+    }
+  }, []);
+
   const run = useCallback(async (fileList: FileList | File[]) => {
     const files = Array.from(fileList).filter((f) => f.type.startsWith("image/"));
     if (!files.length) return;
@@ -52,6 +72,7 @@ export default function AnalyzePage() {
     try {
       const form = new FormData();
       batch.forEach((f) => form.append("files", f));
+      if (useModal) form.append("backend", "modal");
       const res = await fetch("/api/analyze", { method: "POST", body: form });
       const data = (await res.json()) as AnalyzeResponse & { error?: string };
       if (!res.ok) {
@@ -73,7 +94,7 @@ export default function AnalyzePage() {
       setBusy(false);
       setPending(0);
     }
-  }, []);
+  }, [useModal]);
 
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
@@ -129,6 +150,24 @@ export default function AnalyzePage() {
         <div className="mt-3">
           <ModeBadge meta={meta} status={status} />
         </div>
+        {status?.modal && (
+          <label className="caption mt-3 flex w-fit cursor-pointer select-none items-center gap-2">
+            <input
+              type="checkbox"
+              checked={useModal}
+              onChange={(e) => toggleModal(e.target.checked)}
+              className="size-3.5 accent-current"
+            />
+            <span>
+              Score on Modal{" "}
+              {status.modal.ok
+                ? `— remote ${status.modal.device ?? "GPU"}, ready`
+                : status.modal.ok === false
+                  ? `— ${status.modal.error ?? "not ready"}`
+                  : "— cold; the first request boots the GPU container"}
+            </span>
+          </label>
+        )}
       </Measure>
 
       <Measure>
@@ -142,8 +181,16 @@ export default function AnalyzePage() {
         )}
         {(meta?.mode === "live" || (!meta && status?.mode === "live")) && (
           <Notice>
-            Live model. Serving {meta?.checkpoint ?? status?.checkpoint}
-            {status?.device ? ` on ${status.device}` : " through the Python bridge"}.
+            {meta?.backend === "modal" ? "Live model on Modal." : "Live model."} Serving{" "}
+            {meta?.checkpoint ?? status?.checkpoint}
+            {meta?.backend === "modal"
+              ? status?.modal?.device
+                ? ` (${status.modal.device})`
+                : ""
+              : status?.device
+                ? ` on ${status.device}`
+                : " through the Python bridge"}
+            .
           </Notice>
         )}
         {error && <Notice>{error}</Notice>}
@@ -225,7 +272,9 @@ function ModeBadge({
   meta: AnalyzeResponse | null;
   status: StatusResponse | null;
 }) {
-  const live = meta?.mode === "live" || (!meta && status?.mode === "live");
+  const live =
+    meta?.mode === "live" ||
+    (!meta && (status?.mode === "live" || Boolean(status?.modal?.ok)));
   if (!meta && !status) return null;
   return (
     <span className="essay-kicker">

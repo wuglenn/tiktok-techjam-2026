@@ -116,6 +116,7 @@ Hub login — `predict.py` downloads
 | `SEER_CHECKPOINT` | repo-root `best.pt`, else newest `runs/*/best.pt` | inference weights |
 | `SEER_PYTHON` | `uv run python`, else `.venv` | interpreter for dashboard inference |
 | `SEER_INFER_URL` | `http://127.0.0.1:8765` | persistent inference server |
+| `SEER_MODAL_URL` | — | Modal deployment URL for remote GPU inference (`modal deploy client/scripts/modal_seer.py`) |
 | `HF_TOKEN` / `HF_HOME` | — / `$SEER_DATA_ROOT/hf_cache` | gated Hub access and cache |
 
 | Port | Process |
@@ -337,7 +338,11 @@ cd client && npm install && npm run dev                          # http://localh
 | `/errors` | most confident FP/FN with heatmaps |
 
 Upload limits: 12 images / 40 MB each. Without a local or cached
-checkpoint, `/analyze` runs in simulated mode.
+checkpoint, `/analyze` runs in simulated mode. `/analyze` can also score
+on a remote Modal GPU deployment (no local weights needed) — deploy with
+`modal deploy client/scripts/modal_seer.py`, export `SEER_MODAL_URL`, and
+flip the "Score on Modal" flag; see
+[`client/README.md`](client/README.md#modal-deployment-remote-gpu).
 
 ---
 

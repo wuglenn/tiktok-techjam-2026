@@ -218,6 +218,12 @@ export function inferServerUrl(): string {
   return (raw || "http://127.0.0.1:8765").replace(/\/$/, "");
 }
 
+/** Modal deployment URL ($SEER_MODAL_URL), or null when not configured. */
+export function modalServerUrl(): string | null {
+  const raw = process.env.SEER_MODAL_URL?.trim();
+  return raw ? raw.replace(/\/$/, "") : null;
+}
+
 export interface InferServerHealth {
   ok: boolean;
   ready?: boolean;
@@ -315,6 +321,66 @@ async function runViaServer(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Score uploads against the Modal deployment (client/scripts/modal_seer.py).
+ * Images travel as base64 — the remote container cannot read local paths.
+ */
+async function runViaModal(
+  url: string,
+  files: UploadFile[],
+  timeoutMs: number,
+): Promise<AnalyzeResult[]> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${url}/analyze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        images: files.map((f) => ({ name: f.name, data: f.buf.toString("base64") })),
+      }),
+      signal: ctrl.signal,
+      cache: "no-store",
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      let detail = text.slice(0, 400);
+      try {
+        const parsed = JSON.parse(text) as { error?: string; detail?: unknown };
+        if (typeof parsed.error === "string") detail = parsed.error;
+        else if (parsed.detail !== undefined)
+          detail = JSON.stringify(parsed.detail).slice(0, 400);
+      } catch {
+        /* keep raw text */
+      }
+      throw new Error(`modal deployment ${res.status}: ${detail}`);
+    }
+    const records = JSON.parse(text) as BridgeRecord[];
+    if (!Array.isArray(records)) throw new Error("modal deployment returned no array");
+    return recordsToResults(records, files);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Live inference on the Modal deployment ($SEER_MODAL_URL). No health
+ * pre-probe on purpose: a cold Modal container boots on the first request
+ * and the POST itself waits for it (can take a minute or two).
+ */
+export async function runModal(
+  files: UploadFile[],
+  timeoutMs = 290_000,
+): Promise<AnalyzeResult[]> {
+  const url = modalServerUrl();
+  if (!url) {
+    throw new Error(
+      "SEER_MODAL_URL is not set — deploy the model with `modal deploy client/scripts/modal_seer.py` and export SEER_MODAL_URL to the printed URL",
+    );
+  }
+  return runViaModal(url, files, timeoutMs);
 }
 
 /**

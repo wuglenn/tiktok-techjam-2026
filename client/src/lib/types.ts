@@ -81,8 +81,20 @@ export interface AnalyzeResult {
   elapsedMs?: number;
 }
 
+/** Modal deployment status, probed by /api/status when SEER_MODAL_URL is set. */
+export interface ModalStatus {
+  url: string;
+  /** true = healthy, false = answered but not ready, null = unreachable (cold or down) */
+  ok: boolean | null;
+  device?: string | null;
+  checkpoint?: string | null;
+  error?: string | null;
+}
+
 export interface AnalyzeResponse {
   mode: "live" | "simulated";
+  /** which backend produced the results */
+  backend?: "local" | "modal";
   checkpoint?: string | null;
   note?: string | null;
   results: AnalyzeResult[];
@@ -97,4 +109,6 @@ export interface StatusResponse {
   server?: string | null;
   device?: string | null;
   error?: string | null;
+  /** Modal deployment (client/scripts/modal_seer.py) when SEER_MODAL_URL is set */
+  modal?: ModalStatus | null;
 }

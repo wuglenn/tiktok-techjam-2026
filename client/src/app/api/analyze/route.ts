@@ -1,6 +1,13 @@
 import { NextResponse } from "next/server";
 
-import { findCheckpoint, repoRoot, runBridge, simulateFile } from "@/lib/seer-server";
+import {
+  findCheckpoint,
+  modalServerUrl,
+  repoRoot,
+  runBridge,
+  runModal,
+  simulateFile,
+} from "@/lib/seer-server";
 import type { UploadFile } from "@/lib/seer-server";
 import type { AnalyzeResponse } from "@/lib/types";
 
@@ -13,8 +20,12 @@ const MAX_BYTES = 40 * 1024 * 1024;
 
 export async function POST(req: Request) {
   let files: UploadFile[] = [];
+  let useModal = false;
   try {
     const form = await req.formData();
+    useModal =
+      form.get("backend") === "modal" ||
+      new URL(req.url).searchParams.get("backend") === "modal";
     for (const f of form.getAll("files")) {
       if (!(f instanceof File)) continue;
       if (!f.type.startsWith("image/")) {
@@ -37,6 +48,41 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "one of the files exceeds the 40 MB limit" }, { status: 400 });
   }
 
+  // Modal deployment flag ("Score on Modal" toggle on /analyze): score
+  // remotely, no local checkpoint / interpreter / repo root required.
+  if (useModal) {
+    const modal = modalServerUrl();
+    if (!modal) {
+      return NextResponse.json(
+        {
+          error:
+            "Modal backend requested but SEER_MODAL_URL is not set — run `modal deploy client/scripts/modal_seer.py` and export SEER_MODAL_URL to the printed URL",
+        },
+        { status: 400 },
+      );
+    }
+    const started = Date.now();
+    try {
+      const results = await runModal(files);
+      const elapsed = Date.now() - started;
+      const body: AnalyzeResponse = {
+        mode: "live",
+        backend: "modal",
+        checkpoint: modal,
+        results: results.map((r) => ({ ...r, elapsedMs: Math.round(elapsed / results.length) })),
+      };
+      return NextResponse.json(body);
+    } catch (err) {
+      const note = err instanceof Error ? err.message : String(err);
+      return NextResponse.json(
+        {
+          error: `modal inference failed — ${note.slice(0, 400)}${note.length > 400 ? "…" : ""}`,
+        },
+        { status: 502 },
+      );
+    }
+  }
+
   const root = repoRoot();
   const checkpoint = root ? findCheckpoint(root) : null;
   const t0 = Date.now();
@@ -47,6 +93,7 @@ export async function POST(req: Request) {
       const elapsed = Date.now() - t0;
       const body: AnalyzeResponse = {
         mode: "live",
+        backend: "local",
         checkpoint,
         results: results.map((r) => ({ ...r, elapsedMs: Math.round(elapsed / results.length) })),
       };
