@@ -74,10 +74,7 @@ export default function OverviewPage() {
         </p>
       </Measure>
       <div className="mt-6">
-        <Figure
-          wash
-          caption="Input image, DINOv3 ViT-L/16, then a fork into the global head and the 32×32 local head."
-        >
+        <Figure wash>
           <FlowDiagram />
         </Figure>
       </div>

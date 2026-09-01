@@ -45,15 +45,6 @@ export function EvalResults() {
         </div>
       )}
       {data && <HeldoutTable datasets={datasets} />}
-      {data?.mode === "live" && (step != null || ckpt) && (
-        <Measure>
-          <p className="caption">
-            source: eval/eval_step33500
-            {step != null && ` · step ${step.toLocaleString("en-US")}`}
-            {ckpt && ` · ${ckpt.split(/[\\/]/).pop()}`}
-          </p>
-        </Measure>
-      )}
       <Measure>
         <h3 className="small-head">NTIRE 2026 open test</h3>
         <p className="mt-1 text-[16px] leading-[1.5] text-ink-body">
