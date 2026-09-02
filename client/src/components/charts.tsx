@@ -60,13 +60,14 @@ export function SweepTable({ sweep }: { sweep: Record<string, MetricsRow> }) {
 
   return (
     <div className="figure overflow-x-auto">
-      <table className="paper-table min-w-[620px]">
+      <table className="paper-table min-w-[680px]">
         <thead>
           <tr>
             <th>Perturbation</th>
             <th>Macro acc</th>
             <th>Δ vs clean</th>
             <th>F1</th>
+            <th>AUROC</th>
             <th>FPR</th>
             <th>FNR</th>
             <th className="text-right">n</th>
@@ -76,7 +77,7 @@ export function SweepTable({ sweep }: { sweep: Record<string, MetricsRow> }) {
           {sorted.map(([fam, rows]) => (
             <Fragment key={fam}>
               <tr className="family-row">
-                <td colSpan={7}>{fam}</td>
+                <td colSpan={8}>{fam}</td>
               </tr>
               {rows.map(([key, m]) => {
                 const delta =
@@ -86,18 +87,12 @@ export function SweepTable({ sweep }: { sweep: Record<string, MetricsRow> }) {
                 return (
                   <tr key={`${fam}-${key}`}>
                     <td>{perturbationLabel(key)}</td>
-                    <td>
-                      <div className="flex items-center gap-2.5">
-                        <span className="tabular w-12 text-ink-head">{pct(m.macro_accuracy)}</span>
-                        <div className="w-16">
-                          <MetricBar value={m.macro_accuracy} />
-                        </div>
-                      </div>
-                    </td>
+                    <td className="tabular text-ink-head">{pct(m.macro_accuracy)}</td>
                     <td>
                       {delta != null ? <DeltaChip v={delta} /> : <span className="text-ink-mute">—</span>}
                     </td>
                     <td className="tabular">{pct(m.f1)}</td>
+                    <td className="tabular">{pct(m.auroc)}</td>
                     <td className="tabular">{pct(m.fpr)}</td>
                     <td className="tabular">{pct(m.fnr)}</td>
                     <td className="tabular text-right text-ink-mute">

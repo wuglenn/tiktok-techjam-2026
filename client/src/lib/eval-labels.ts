@@ -1,5 +1,8 @@
 /** Display names for eval suite keys / filenames. */
+export const TECHJAM_EVAL_KEY = "glennwuwu/tiktok-techjam-2026-eval";
+
 const NAMES: Record<string, string> = {
+  [TECHJAM_EVAL_KEY]: "WildFake subset",
   comfor_eval: "CommunityForensics-Eval",
   openfake_test: "OpenFake core/test",
   openfake_reddit: "OpenFake reddit/test",

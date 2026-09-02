@@ -40,9 +40,9 @@ Production: `npm run build && npm start`.
 
 [`scripts/modal_seer.py`](scripts/modal_seer.py) deploys the detector to
 [Modal](https://modal.com) so the dashboard can score images with **no local
-weights, GPU, or Python environment**. It pulls `best.pt` from
+weights, GPU, or Python environment**. It pulls `best.pt` and `heatmap.pt` from
 [glennwuwu/seer](https://huggingface.co/glennwuwu/seer) into a Modal Volume,
-keeps the model in GPU memory, and serves the same `/health` + `/analyze`
+keeps both models in GPU memory, and serves the same `/health` + `/analyze`
 contract as `seer_serve.py` (images travel as base64 instead of local paths).
 
 ```bash
@@ -63,15 +63,15 @@ request fails with an error instead of returning fake verdicts. A cold
 container boots on the first request (~1–2 min including the 4.9 GB load; the
 Volume pre-fetch above is what keeps it off the GPU clock).
 
-Containers default to an **L40S** GPU. `SEER_MODAL_GPU` overrides that at
-deploy time with a single Modal GPU name (`T4`, `L4`, `A10G`, `L40S`,
-`A100`, `H100`, …) or a comma-separated **pool** of names — the scheduler
+Containers default to the **T4, L4, A10G** pool (`A10G` is Modal's name
+for its A10-class GPU). `SEER_MODAL_GPU` overrides that at deploy time with
+a single Modal GPU name or a comma-separated **pool** — the scheduler
 places each container on the first listed type with capacity, so a deploy
 keeps working when one card is out of stock:
 
 ```bash
-SEER_MODAL_GPU=A10G modal deploy client/scripts/modal_seer.py          # one type
-SEER_MODAL_GPU=T4,A10G,L40S modal deploy client/scripts/modal_seer.py  # pool
+SEER_MODAL_GPU=A10G modal deploy client/scripts/modal_seer.py         # one type
+SEER_MODAL_GPU=T4,L4,A10G modal deploy client/scripts/modal_seer.py    # pool
 ```
 
 | Command | What it does |
@@ -79,7 +79,7 @@ SEER_MODAL_GPU=T4,A10G,L40S modal deploy client/scripts/modal_seer.py  # pool
 | `modal deploy client/scripts/modal_seer.py` | persistent deployment; prints the URL to export |
 | `modal serve client/scripts/modal_seer.py` | ephemeral dev deployment, live-reloads on file changes |
 | `modal run client/scripts/modal_seer.py --image-path a.jpg` | smoke-test one image through the deployed class |
-| `SEER_MODAL_GPU=… modal deploy …` | choose GPU(s) for the container (default `L40S`) |
+| `SEER_MODAL_GPU=… modal deploy …` | choose GPU(s) for the container (default `T4,L4,A10G`) |
 
 The endpoint URL is public — anyone holding it can score images. For
 restricted access use Modal's [proxy tokens](https://modal.com/docs/guide/webhooks#authentication)
@@ -121,9 +121,10 @@ Upload limits: **12 images / 40 MB each**.
 - **Error** — no reachable backend: the API answers 503 with setup
   instructions rather than fake verdicts.
 
-`/robustness` and `/errors` scan the committed suite bundled at
-`client/eval/eval_step33500/` first, then `runs/eval/` and `runs/` from
-the repo root (written by `main.py eval --out-json ...`, error panels by
+`/robustness` and `/errors` scan the committed suites bundled at
+`client/eval/techjam_eval/` and `client/eval/eval_step33500/` first, then
+`runs/eval/` and `runs/` from the repo root (written by
+`main.py eval --out-json ...`, error panels by
 `--error-dir`). With none present they show bundled demo data, clearly
 labeled. To populate extra runs:
 
@@ -134,8 +135,9 @@ uv run python main.py eval --checkpoint runs/seer_vitl/best.pt \
   --out-json runs/eval/ntire_val.json
 ```
 
-The committed step-33,500 suite is bundled at `client/eval/eval_step33500/`
-and is what the dashboard picks up first.
+The TechJam perturbation sweep is bundled at
+`client/eval/techjam_eval/summary.json`; the held-out step-33,500 suite is at
+`client/eval/eval_step33500/`.
 
 ## Layout
 
@@ -148,12 +150,13 @@ src/
     errors/page.tsx       # FP/FN gallery + trade-offs note
     api/status/route.ts   # mode / checkpoint / interpreter probe
     api/analyze/route.ts  # POST images -> verdicts (local or Modal backend; errors otherwise)
-    api/eval/route.ts     # eval JSONs from eval/eval_step33500, then runs/
+    api/eval/route.ts     # bundled eval JSONs, then runs/
     api/eval-image/route.ts  # serves error-panel PNGs (path-checked)
   components/             # app header, heat canvas, verdict widgets, charts
   lib/                    # shared types, turbo colormap, formatting, demo data
 scripts/seer_serve.py     # persistent server on :8765 (preferred)
 scripts/seer_infer.py     # one-shot JSON bridge (fallback spawn)
 scripts/modal_seer.py     # Modal deployment — remote GPU backend (see above)
+eval/techjam_eval/        # committed TechJam transformation sweep
 eval/eval_step33500/      # committed held-out suite: JSONs + error panels + run_suite.py
 ```

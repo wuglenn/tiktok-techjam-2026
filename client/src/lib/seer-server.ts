@@ -570,15 +570,22 @@ function toPosix(p: string): string {
   return p.split(path.sep).join("/");
 }
 
-/** Scan the bundled client/eval/eval_step33500 suite, then the repo's
+/** Scan the bundled held-out and robustness suites, then the repo's
  * runs/eval and runs (when the Seer repo root is present), newest first. */
 export function scanEvalRuns(root: string | null, limit = 30): EvalDataset[] {
   const out: EvalDataset[] = [];
   const seen = new Set<string>();
-  // the committed step-33,500 suite ships with the dashboard itself, so
-  // /robustness and /errors work without the Python repo (e.g. Modal-only)
+  // The committed suites ship with the dashboard itself, so the evaluation
+  // pages work without the Python repo (e.g. in a Modal-only deployment).
+  // TechJam's summary is one normalized sweep; the held-out suite's summary
+  // only aggregates its individual JSON files and must not be loaded twice.
   const clientDir = process.cwd();
-  const dirs: { dir: string; base: string }[] = [
+  const dirs: { dir: string; base: string; summaryOnly?: boolean }[] = [
+    {
+      dir: path.join(clientDir, "eval", "techjam_eval"),
+      base: clientDir,
+      summaryOnly: true,
+    },
     { dir: path.join(clientDir, "eval", "eval_step33500"), base: clientDir },
   ];
   if (root) {
@@ -587,7 +594,7 @@ export function scanEvalRuns(root: string | null, limit = 30): EvalDataset[] {
       { dir: path.join(root, "runs"), base: root },
     );
   }
-  for (const { dir, base: baseDir } of dirs) {
+  for (const { dir, base: baseDir, summaryOnly = false } of dirs) {
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -595,7 +602,12 @@ export function scanEvalRuns(root: string | null, limit = 30): EvalDataset[] {
       continue;
     }
     const jsons = entries
-      .filter((e) => e.isFile() && e.name.endsWith(".json") && e.name !== "summary.json")
+      .filter(
+        (e) =>
+          e.isFile() &&
+          e.name.endsWith(".json") &&
+          (summaryOnly ? e.name === "summary.json" : e.name !== "summary.json"),
+      )
       .map((e) => {
         const p = path.join(dir, e.name);
         return { p, mtime: fs.statSync(p).mtimeMs };

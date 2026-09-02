@@ -58,10 +58,17 @@ export default function RobustnessPage() {
   return (
     <div className="space-y-10">
       <Measure className="essay">
-        <h1 className="essay-title">Clean versus distorted performance</h1>
+        <h1 className="essay-title">Robustness under common transformations</h1>
         <p className="mt-4">
-          The table below is the NTIRE 2026 public-test leaderboard from
-          Table 3 of{" "}
+          We evaluate Seer on 13,843 held-out images from the TechJam evaluation
+          set: 5,000 real COCO photographs and 8,843 WildFake DALL·E 3 images.
+          The sweep measures clean performance and 15 common transformations,
+          including recompression, blur, resizing, noise, color jitter, cropping,
+          and the pangram submission protocol.
+        </p>
+        <p className="mt-4">
+          For comparison, the table below is the NTIRE 2026 public-test
+          leaderboard from Table 3 of{" "}
           <a
             href="https://arxiv.org/pdf/2604.11487"
             target="_blank"
@@ -114,11 +121,7 @@ export default function RobustnessPage() {
         </Measure>
       )}
 
-      {ds?.file && (
-        <Measure>
-          <p className="caption">source: {ds.file}</p>
-        </Measure>
-      )}
+
 
       {stats && (
         <Measure>

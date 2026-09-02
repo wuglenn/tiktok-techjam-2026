@@ -6,6 +6,7 @@ import { EvalBreakdowns } from "@/components/eval-breakdowns";
 import { Measure, Notice } from "@/components/essay";
 import { HeldoutTable } from "@/components/heldout-table";
 import { NtireLeaderboard } from "@/components/ntire-leaderboard";
+import { TECHJAM_EVAL_KEY } from "@/lib/eval-labels";
 import type { EvalResponse } from "@/lib/types";
 
 export function EvalResults() {
@@ -20,6 +21,7 @@ export function EvalResults() {
   }, []);
 
   const datasets = data?.datasets ?? [];
+  const heldoutDatasets = datasets.filter((d) => d.name !== TECHJAM_EVAL_KEY);
   const step = datasets.find((d) => d.step != null)?.step;
   const ckpt = datasets.find((d) => d.checkpoint)?.checkpoint;
 
@@ -44,7 +46,7 @@ export function EvalResults() {
           ))}
         </div>
       )}
-      {data && <HeldoutTable datasets={datasets} />}
+      {data && <HeldoutTable datasets={heldoutDatasets} />}
       <Measure>
         <h3 className="small-head">NTIRE 2026 open test</h3>
         <p className="mt-1 text-[16px] leading-[1.5] text-ink-body">

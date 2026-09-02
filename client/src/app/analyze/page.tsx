@@ -10,6 +10,7 @@ import type { AnalyzeResponse, AnalyzeResult, StatusResponse } from "@/lib/types
 
 const MAX_FILES = 12;
 const MAX_BYTES = 40 * 1024 * 1024;
+const STATUS_POLL_MS = 30_000;
 
 type UploadState = "queued" | "processing";
 
@@ -42,23 +43,39 @@ export default function AnalyzePage() {
 
   useEffect(() => {
     let alive = true;
+    let pulling = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
-    // Self-paced polling avoids stacking health probes while a remote model is waking up.
+    // This effect only exists while /analyze is mounted. Pause it when the tab
+    // is hidden and self-pace requests so health probes never overlap.
     const pull = async () => {
+      if (!alive || pulling || document.visibilityState !== "visible") return;
+      pulling = true;
       try {
         const res = await fetch("/api/status");
         const data = (await res.json()) as StatusResponse;
         if (alive) setStatus(data);
       } catch {
         // Keep the last known state and try again after the gap.
+      } finally {
+        pulling = false;
+        if (alive && document.visibilityState === "visible") {
+          timer = setTimeout(pull, STATUS_POLL_MS);
+        }
       }
-      if (alive) timer = setTimeout(pull, 4000);
     };
 
+    const onVisibilityChange = () => {
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      if (document.visibilityState === "visible") void pull();
+    };
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
     void pull();
     return () => {
       alive = false;
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       if (timer) clearTimeout(timer);
     };
   }, []);
