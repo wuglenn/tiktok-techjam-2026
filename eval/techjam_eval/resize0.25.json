@@ -1,0 +1,50 @@
+{
+  "n": 13843,
+  "n_fake": 8843,
+  "n_real": 5000,
+  "accuracy": 0.9976161236726143,
+  "macro_accuracy": 0.997786452561348,
+  "precision": 0.9990935871289373,
+  "recall": 0.997172905122696,
+  "f1": 0.9981323221461317,
+  "fpr": 0.0016,
+  "fnr": 0.0028270948773040823,
+  "auroc": 0.9999704964378604,
+  "mAP": 0.9999833130871306,
+  "dataset": "techjam_eval",
+  "perturbation": "resize0.25",
+  "hflip_tta": false,
+  "per_architecture": {
+    "coco-val2017": {
+      "n": 5000,
+      "n_fake": 0,
+      "n_real": 5000,
+      "accuracy": 0.9984,
+      "macro_accuracy": 0.4992,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "fpr": 0.0016,
+      "fnr": 0.0,
+      "auroc": null,
+      "mAP": null
+    },
+    "wildfake-dalle-advanced": {
+      "n": 8843,
+      "n_fake": 8843,
+      "n_real": 0,
+      "accuracy": 0.997172905122696,
+      "macro_accuracy": 0.498586452561348,
+      "precision": 1.0,
+      "recall": 0.997172905122696,
+      "f1": 0.9985844516165563,
+      "fpr": 0.0,
+      "fnr": 0.0028270948773040823,
+      "auroc": null,
+      "mAP": null
+    }
+  },
+  "checkpoint": "C:\\Users\\Jovan\\Documents\\GitHub\\tiktok-techjam-2026\\best.pt",
+  "step": 32000,
+  "seconds": 557.2
+}

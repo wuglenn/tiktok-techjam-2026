@@ -79,6 +79,19 @@ MIRAGE_EVAL = {
     ),
 }
 
+# Official TechJam demo pair: COCO val2017 + WildFake DALL·E Advanced.
+# https://huggingface.co/datasets/glennwuwu/tiktok-techjam-2026-eval
+TECHJAM_EVAL = {
+    "techjam_eval": dict(
+        dataset="glennwuwu/tiktok-techjam-2026-eval",
+        split="test",
+        image_col="image",
+        label_col="label",
+        generator_col="source",
+    ),
+}
+TECHJAM_EVAL["glennwuwu/tiktok-techjam-2026-eval"] = TECHJAM_EVAL["techjam_eval"]
+
 NTIRE_EVAL = {
     "ntire_val": dict(split="val"),
     "ntire_val_hard": dict(split="val_hard"),
@@ -270,7 +283,10 @@ def _chunked(ds, batch_size: int, max_samples: Optional[int] = None):
 
 
 def known_eval_datasets() -> list:
-    return list(EVAL_SPECS) + list(NTIRE_EVAL) + list(OPENFAKE_EVAL) + list(MIRAGE_EVAL) + ["folders"]
+    return (
+        list(EVAL_SPECS) + list(NTIRE_EVAL) + list(OPENFAKE_EVAL)
+        + list(MIRAGE_EVAL) + list(TECHJAM_EVAL) + ["folders"]
+    )
 
 
 def _local_parquet_dirs(*keys: str) -> Optional[List[str]]:
@@ -361,9 +377,10 @@ def _build_eval_dataset(dataset, real_dirs=None, fake_dirs=None,
         if not parts:
             raise ValueError("folders eval needs --real-dir and/or --fake-dir")
         return torch.utils.data.ConcatDataset(parts)
-    if dataset in MIRAGE_EVAL:
-        spec = MIRAGE_EVAL[dataset]
-        local = _local_parquet_dirs("mirage")
+    if dataset in MIRAGE_EVAL or dataset in TECHJAM_EVAL:
+        spec = MIRAGE_EVAL.get(dataset) or TECHJAM_EVAL[dataset]
+        name = "mirage" if dataset in MIRAGE_EVAL else "techjam_eval"
+        local = _local_parquet_dirs("mirage" if name == "mirage" else "techjam-eval")
         return HFGenericStream(
             dataset=spec["dataset"],
             split=spec["split"],
@@ -373,7 +390,7 @@ def _build_eval_dataset(dataset, real_dirs=None, fake_dirs=None,
             shuffle_buffer=0,
             max_samples=None,
             seed=0,
-            name="mirage",
+            name=name,
             local_dirs=local,
         )
     if dataset in NTIRE_EVAL:
@@ -411,6 +428,8 @@ def _tag_eval_sample(sample: dict, dataset: str) -> dict:
         sample.setdefault("source_type", "comfor")
     elif dataset in MIRAGE_EVAL:
         sample.setdefault("source_type", "mirage")
+    elif dataset in TECHJAM_EVAL:
+        sample.setdefault("source_type", "techjam_eval")
     elif dataset == "folders" or dataset in OPENFAKE_EVAL:
         sample.setdefault("source_type", "folders")
     return sample
