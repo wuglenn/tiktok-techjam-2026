@@ -23,8 +23,11 @@ Deploy (docs: https://modal.com/docs):
 
 Dev loop: `modal serve client/scripts/modal_seer.py` runs an ephemeral app
 that live-reloads on file changes. Weights are cached in the
-`seer-checkpoints` Modal Volume; GPU type defaults to L40S and can be
-changed at deploy time, e.g. `SEER_MODAL_GPU=A100 modal deploy ...`.
+`seer-checkpoints` Modal Volume. The container's GPU is picked by the
+SEER_MODAL_GPU env var at deploy time (default L40S): either one Modal GPU
+name (T4, A10G, L40S, A100, H100, ...) or a comma-separated pool of names
+that the scheduler fills from whichever type has capacity, e.g.
+`SEER_MODAL_GPU=T4,A10G modal deploy ...`.
 """
 
 import base64
@@ -61,9 +64,32 @@ REPO_ROOT = _repo_root()
 CHECKPOINT_DIR = Path("/checkpoints")
 CHECKPOINT_PATH = CHECKPOINT_DIR / HF_WEIGHTS
 
-# L40S is Modal's cost/performance pick for inference (48 GB, bf16-capable).
-# Any Modal GPU string works; evaluated when `modal deploy` runs.
-GPU = os.environ.get("SEER_MODAL_GPU", "L40S")
+
+def _resolve_gpu_request() -> str | list[str]:
+    """Parse SEER_MODAL_GPU into the Modal gpu= spec (evaluated at deploy).
+
+    Defaults to L40S, Modal's cost/performance pick for inference (48 GB,
+    bf16-capable). A single name yields a plain str; comma-separated names
+    yield a list, and Modal then runs the container on the first listed type
+    that has capacity. Cover the range you are willing to run on — cheap
+    inference cards (T4, L4, A10G) through L40S up to A100/H100 — and
+    deploys stop failing when one type is out of stock.
+    """
+    raw = os.environ.get("SEER_MODAL_GPU", "L40S")
+    specs = [s.strip() for s in raw.split(",") if s.strip()]
+    if not specs:
+        raise ValueError(
+            "SEER_MODAL_GPU is set but empty; expected one GPU name or a list"
+        )
+    if any(c.isspace() for s in specs for c in s):
+        raise ValueError(
+            f"SEER_MODAL_GPU={raw!r}: separate GPU names with commas, "
+            "e.g. SEER_MODAL_GPU=T4,A10G,L40S"
+        )
+    return specs[0] if len(specs) == 1 else specs
+
+
+GPU_REQUEST = _resolve_gpu_request()
 
 checkpoint_volume = modal.Volume.from_name("seer-checkpoints", create_if_missing=True)
 
@@ -109,7 +135,7 @@ def download_weights() -> str:
 
 
 @app.cls(
-    gpu=GPU,
+    gpu=GPU_REQUEST,  # str = one type; list[str] = pool, first type with capacity
     volumes={CHECKPOINT_DIR: checkpoint_volume},
     timeout=15 * 60,  # first boot may download + deserialize the 4.9 GB blob
     scaledown_window=5 * 60,  # keep one container warm for demo traffic
@@ -294,6 +320,7 @@ def main(image_path: Optional[str] = None) -> None:
     """
     if image_path is None:
         print(f"[smoke] checkpoint on volume: {download_weights.remote()}")
+        print(f"[smoke] gpu request: {GPU_REQUEST}")
         print("[smoke] deploy with: modal deploy client/scripts/modal_seer.py")
         return
     data = base64.b64encode(Path(image_path).read_bytes()).decode()

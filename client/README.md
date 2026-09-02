@@ -63,12 +63,23 @@ request fails with an error instead of returning fake verdicts. A cold
 container boots on the first request (~1–2 min including the 4.9 GB load; the
 Volume pre-fetch above is what keeps it off the GPU clock).
 
+Containers default to an **L40S** GPU. `SEER_MODAL_GPU` overrides that at
+deploy time with a single Modal GPU name (`T4`, `L4`, `A10G`, `L40S`,
+`A100`, `H100`, …) or a comma-separated **pool** of names — the scheduler
+places each container on the first listed type with capacity, so a deploy
+keeps working when one card is out of stock:
+
+```bash
+SEER_MODAL_GPU=A10G modal deploy client/scripts/modal_seer.py          # one type
+SEER_MODAL_GPU=T4,A10G,L40S modal deploy client/scripts/modal_seer.py  # pool
+```
+
 | Command | What it does |
 | --- | --- |
 | `modal deploy client/scripts/modal_seer.py` | persistent deployment; prints the URL to export |
 | `modal serve client/scripts/modal_seer.py` | ephemeral dev deployment, live-reloads on file changes |
 | `modal run client/scripts/modal_seer.py --image-path a.jpg` | smoke-test one image through the deployed class |
-| `SEER_MODAL_GPU=A100 modal deploy …` | pick another GPU (default `L40S`) |
+| `SEER_MODAL_GPU=… modal deploy …` | choose GPU(s) for the container (default `L40S`) |
 
 The endpoint URL is public — anyone holding it can score images. For
 restricted access use Modal's [proxy tokens](https://modal.com/docs/guide/webhooks#authentication)
